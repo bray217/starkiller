@@ -1335,15 +1335,17 @@ def bin_spec(spec,bin_factor=100):
     
     return s
         
+#(ble) Adding false colour functions
 
 from AstroColour.AstroColour import RGB
 
 def make_false_colour(cube, savePath:str, saveName:str, scaleNorm:str="linear"):
     """
     Using AstroColour by zgl12 to false colour a cube. 
-    Inputs:
-    ------
-        cube
+    
+    Parameters
+    ----------
+        cube: starkiller.cube
 
         savePath:str, required
             The path to save the image to
@@ -1352,8 +1354,8 @@ def make_false_colour(cube, savePath:str, saveName:str, scaleNorm:str="linear"):
         scaleNorm: str, optional
             The Norm to scale the images by, default "Linear". Other options include "log", "sinh", "asinh"
     
-    Outputs:
-    --------
+    Returns
+    -------
         colour: ndarray
             the scaled slices of the cube that can then be used for reploting
     """
@@ -1388,3 +1390,491 @@ def make_false_colour(cube, savePath:str, saveName:str, scaleNorm:str="linear"):
     )
     colour = rgb.plot()
     return colour
+
+def make_false_colour_Sloan(cube, lambdas, savePath:str, saveName:str, scaleNorm:str="linear"):
+    """
+    Using AstroColour by zgl12 to false colour a cube. Using the SDSS filter cuts 
+    
+    Parameters
+    ----------
+
+        cube: starkiller.cube, required
+
+        lambdas: starkiller.lam, required
+
+        savePath:str, required
+            The path to save the image to
+        saveName:str, required
+            The name of the image (without a file extension)
+        scaleNorm: str, optional
+            The Norm to scale the images by, default "linear". Other options include "log", "sinh", "asinh"
+    
+    Returns
+    -------
+
+        colour: ndarray
+            the scaled slices of the cube that can then be used for reploting
+    """
+
+    #*SDSS bands
+    gmin = 3797.64	
+    gmax = 5553.04
+    rmin = 5418.23 
+    rmax=	6994.42
+    imin = 6692.41  
+    imax=8400.32
+    zmin = 7964.70
+
+    gIDs = np.where((lambdas>gmin) & (lambdas<gmax))
+
+    rIDs = np.where((lambdas>rmin) & (lambdas<rmax))
+
+    iIDs = np.where((lambdas>imin) & (lambdas<imax))
+
+    zIDs = np.where((lambdas>zmin))
+
+
+    gCube = cube[gIDs[0],:,:] 
+    rCube = cube[rIDs[0],:,:] 
+    iCube = cube[iIDs[0],:,:] 
+    zCube = cube[zIDs[0],:,:] 
+
+    gRange = gmax-lambdas[0] #Only get those in datacube
+    rRange = rmax-rmin
+    iRange = imax-imin
+    zRange = lambdas[-1] - zmin #only get those in datacube
+
+    gIm = np.nansum(gCube, axis=0)
+    rIm = np.nansum(rCube, axis=0)
+    iIm = np.nansum(iCube, axis=0)
+    zIm = np.nansum(zCube, axis=0)
+
+    gIm = gIm/gRange
+    rIm = rIm/rRange
+    iIm = iIm/iRange
+    zIm = zIm/zRange
+
+    imList = [zIm,iIm,rIm,gIm]
+
+    rgb = RGB(
+        imList,
+        colours=['red',"yellow",'green','blue'],
+        intensities=[0.6,0.4, 0.55, 0.55],
+        uppers=[99,99, 99, 99],
+        lowers=[50,50, 50, 50],
+        save=False,
+        save_name=saveName,
+        save_folder=savePath,
+        gamma=1.5,
+        norm='linear',
+        min_separation=29,
+        star_size=5,
+        epsf_plot=False,
+        epsf=False,
+        manual_override=20
+    )
+    colour = rgb.plot()
+
+    return colour
+
+
+#(ble) Adding backgroud stats functions
+
+def _seed_to_mask(seed, lowerBound:float=0.0001):
+    """turns a seed with a single PSF trail into a boolean mask
+    
+    Parameters
+    ----------
+
+        seed: 2D ndarray
+             starkiller.scene.satellite_seeds[i] or starkiller.scene.seeds[i]
+             These arrays will be scalled correctly
+
+        lowerBound: float
+            The lowest value in the seed that will be True in the mask. Should be set with a percentile cut, but due to the size, these are often smaller than floating point precision. So a small float is probably good enough. Default is 0.0001
+             
+    Returns
+    -------
+
+        mask: 2D ndarray
+            a boolean mask the same shape as seed, where True indicates parts of the image plane where the seed was bright, and False the rest of the array
+    """
+    return np.where(seed>lowerBound, True, False)
+
+def _frame_stats(image, mask, slope:float, shift:int=10, returnOffsetMasks:bool=False):
+    """
+    Calculates the stats (mean, med and std) from a given image, a mask, and a plus and minus shifts to the mask
+
+    Parameters
+    ----------
+
+        image: 2D ndarray
+            The frame to compute the statistics on
+        
+        mask: 2D ndarray
+            The mask of the satellite trail or other feature that has been subtracted out, same shape as image
+        
+        slope: float 
+            The m value for a y=mx+c of the mask line.
+            If this is  <= 1 in magnitude, a vertical shift will be applied, else a horizontal shift is made, to stop overlap in the masks.
+
+        shift: int, optional
+            The number of pixels up(down) or left(right) that that plus(minus) mask moves. Default is 10, should be larger than the width of the mask being used, but not so large that the background is dissimilar to the environment of interest. 
+
+        returnOffsetMasks: bool, optional
+            If True, the plus and minus masks are also returned 
+            
+    Returns
+    -------
+        means, medians, stds: lists
+            format is [image, streak, plus mask, minus mask] for each list
+
+        optionally if returnOffsetMasks==True:
+            means, medians, stds, plusMask, minusMask
+        is returned, where plusMask and minusMask are 2D ndarray masks shaped like image and mask with the True values are shifted based on slope and shift.
+        
+    """
+
+    from scipy.ndimage import shift as spyshift
+    #shifts array with scipy based on slope of line
+    if np.abs(slope)<=1:
+        # print("angle < 45 deg")
+        plusMask = spyshift(mask,(shift,0))
+        minusMask = spyshift(mask,(-shift,0))
+    else:
+        plusMask = spyshift(mask,(0,shift))
+        minusMask = spyshift(mask,(0,-shift))
+
+
+    #calc stats for image
+    mean_im, med_im, std_im = sigma_clipped_stats(image)
+    mean_srk, med_srk, std_srk = sigma_clipped_stats(np.where(mask,image,np.nan))
+    mean_plus, med_plus, std_plus = sigma_clipped_stats(np.where(plusMask,image,np.nan))
+    mean_minus, med_minus, std_minus = sigma_clipped_stats(np.where(minusMask,image,np.nan))
+
+    #sorts into meaningful list for return
+    means = [mean_im, mean_srk, mean_plus, mean_minus]
+    medians = [med_im, med_srk, med_plus, med_minus]
+    stds = [std_im, std_srk, std_plus, std_minus]
+
+    if not returnOffsetMasks:
+        return means, medians, stds
+    else:
+        return means, medians, stds, plusMask, minusMask #returns these masks to help not reruning them for plotting
+
+def _make_unscaled_image(cube):
+    """simple median of the datacube, no cuts made"""
+    return np.nanmedian(cube, axis = 0)
+
+
+def _make_diff_im(diffCube, cube): #currently unused, but could be helpful for black and white comparison
+    """
+    Sets quicklook like bounds from the origonal image and applies them to the difference image. 
+
+    Parameters
+    ----------
+
+        cube: starkiller.cube
+            The 3D datacube from the MUSE .fits file
+        
+        diffCube: starkiller.diff
+            The #D datacube made by starkiller after the stars or satellite streaks have been removed
+             
+    Returns
+    -------
+        diffImage: 2D ndarray
+            The median stack image from the diffCube, with the bounds from the cube image applied
+    """
+    image = _make_unscaled_image(cube)
+
+    #*Sets `quicklook-like` bounds, and applies them to the image
+    vmin = np.nanpercentile(image, 1).round(2) 
+    vmax = np.nanpercentile(image, 98).round(2)
+    
+    diffImage = _make_unscaled_image(diffCube)
+    
+    diffImage[image>=vmax] = vmax
+    diffImage[image<=vmin] = vmin
+
+    diffImage = diffImage-vmin #*should make lowest Val 0
+    diffImage = 255*(diffImage/(vmax-vmin)) #*should make the range (0,255), like an 8-bit image
+    diffImage = np.where(np.isfinite(diffImage), diffImage, 0) #*turns any nans into 0s, to keep image finite everywhere
+
+    return diffImage
+
+def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=False, savePath:str|None=None, verbose:bool=False):
+    """
+    Compares the stats of where the streak was and where has been subtracted out, as well as shifted masks, from images made from the cube and diffCube. This is done to compare to what the profile and stats should be where subtracted, and shows if the subtraction is a good one.
+
+    Parameters
+    ----------
+
+        cube: starkiller.cube
+            The 3D datacube from the MUSE .fits file
+        
+        diffCube: starkiller.diff
+            The 3D datacube made by starkiller after the stars or satellite streaks have been removed.
+             
+        seed: 2D ndarray
+             starkiller.scene.satellite_seeds[i] or starkiller.scene.seeds[i] should be used.
+             These arrays will be scalled correctly.
+
+        slope: float 
+            The m value for a y=mx+c of the mask line.
+            If this is  <= 1 in magnitude, a vertical shift will be applied, else a horizontal shift is made, to stop overlap in the masks.
+
+        shift: int, optional
+            The number of pixels up(down) or left(right) that that plus(minus) mask moves. Default is 10, should be larger than the width of the mask being used, but not so large that the background is dissimilar to the environment of interest.  
+
+        plotting: bool, optional
+            If True, the plot are made. Default is False.
+
+        savePath: str|None, optional
+            If not None, the plot is saved to f'{savePath}mask_brightness_with_pos.png', so trailing / is needed in the string. Default is None.
+
+        verbose: bool, optional
+            if True, prints results in a ?nice? format. Default is False.
+            
+    Returns
+    -------
+
+        means, meds, stds, diffMeans, diffMeds, diffStds: lists
+            format is [image, streak, plus mask, minus mask] for each list
+
+    """
+    #makes images, don't want starkiller.image or starkiller.satellite.image as they are scaled differently.
+    satIm = _make_unscaled_image(cube)
+    diffIm = _make_unscaled_image(diffCube)
+
+    #turns seed into mask
+    satMask = _seed_to_mask(seed)
+
+    means, meds, stds, plusMask, minusMask = _frame_stats(satIm, satMask, slope, shift, returnOffsetMasks=True) #runs on image
+
+    #upacks lists
+    mean_im, mean_srk, mean_plus, mean_minus = means
+    med_im, med_srk, med_plus, med_minus = meds
+    std_im, std_srk, std_plus, std_minus = stds
+
+    diffMeans, diffMeds, diffStds = _frame_stats(diffIm, satMask, slope, shift) #runs of diff image
+
+    #unpack diff lists 
+    mean_diff_im, mean_sub, mean_diff_plus, mean_diff_minus = diffMeans
+    med_diff_im, med_sub, med_diff_plus, med_diff_minus = diffMeds
+    std_diff_im, std_sub, std_diff_plus, std_diff_minus = diffStds
+
+    if verbose:
+        print(f"MEANs:\n Im = {mean_im}, Diff Im = {mean_diff_im} \n Streak = {mean_srk}, Subtracted Streak = {mean_sub} \n Im Plus ={mean_plus}, Diff Plus = {mean_diff_plus} \n Im Minus = {mean_minus}, Diff Minus = {mean_diff_minus}")
+
+        print(f"MEDs:\n Im = {med_im}, Diff Im = {med_diff_im} \n Streak = {med_srk}, Subtracted Streak = {med_sub} \n Im Plus ={med_plus}, Diff Plus = {med_diff_plus} \n Im Minus = {med_minus}, Diff Minus = {med_diff_minus}")
+
+        print(f"STDs:\n Im = {std_im}, Diff Im = {std_diff_im} \n Streak = {std_srk}, Subtracted Streak = {std_sub} \n Im Plus ={std_plus}, Diff Plus = {std_diff_plus} \n Im Minus = {std_minus}, Diff Minus = {std_diff_minus}")
+
+    if plotting:
+        sat_bright = np.nansum(np.where(satMask,satIm,np.nan),axis=0) #* sums  the y-axis values for each x-axis position. Brightness doesn't have meaningful units as it is summing median values from the cubes
+        plus_bright = np.nansum(np.where(plusMask,satIm,np.nan),axis=0)
+        minus_bright = np.nansum(np.where(minusMask,diffIm,np.nan),axis=0)
+        sub_bright = np.nansum(np.where(satMask,diffIm,np.nan),axis=0)
+
+        xs = np.arange(sat_bright.shape[0])
+
+
+        fig, ax = plt.subplots()
+
+        ax.plot(xs, sat_bright, label = "Sat")
+        ax.plot(xs, plus_bright , label = "+")
+        ax.plot(xs, minus_bright, label = "-")
+        ax.plot(xs, sub_bright, label = "Sub")
+
+        ax.set(xlabel="Position", ylabel="Brightness", ylim=(0, np.nanmax(sat_bright)+100))
+        ax.legend()
+
+        if savePath is not None:
+            fig.savefig(f"{savePath}mask_brightness_with_pos.png")
+
+    return means, meds, stds, diffMeans, diffMeds, diffStds 
+
+
+def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:bool=False,savePath:str|None=None, plotxLim:tuple[float,float]|None=None, plotIm:bool=False, plotPlus:bool=False, plotMinus:bool=False):
+    """
+    Compares the stats of where the streak was and where has been subtracted out, as well as shifted masks, for each wavelenght slice in both the cube and the diffCube. This is done to see if there is a large 
+
+    Parameters
+    ----------
+
+            cube: starkiller.cube
+                The 3D datacube from the MUSE .fits file
+            
+            diffCube: starkiller.diff
+                The 3D datacube made by starkiller after the stars or satellite streaks have been removed
+
+            lams: starkiller.lam
+                The wavelengths present in the cube    
+            
+            seed: 2D ndarray
+                starkiller.scene.satellite_seeds[i] or starkiller.scene.seeds[i]
+                These arrays will be scalled correctly
+
+            slope: float 
+                The m value for a y=mx+c of the mask line.
+                If this is  <= 1 in magnitude, a vertical shift will be applied, else a horizontal shift is made, to stop overlap in the masks.
+
+            shift: int, optional
+                The number of pixels up(down) or left(right) that that plus(minus) mask moves. Default is 10, should be larger than the width of the mask being used, but not so large that the background is dissimilar to the environment of interest.  
+
+            plotting: bool, optional
+                If True, the plot are made. Default False
+
+            savePath: str|None, optional
+                If not None, the plot is saved to f'{savePath}wavelength_stats.png', so trailing / is needed in the string. Default is None
+                
+            plotxLim: length 2 tuple of floats | None
+                The wavelenght values in Angstroms to cut the x-axis to. Usefull for zooming in to see the differences. If None, plt decides based on the range of lams. Default is None.
+
+            NOTE I recomend only one of the following be True. The plots get messy with too many things on them   
+            
+            plotIm: bool
+                Plots the stats for the entire image plane for each wavelenght. The cube and diff versions should be approximately the same, if the subtraction is good. Default is False
+            
+            plotPlus: bool
+                Plots the stats for the plus shifted streak for each wavelenght. The cube and diff versions should be the same, if the subtraction is good. Default is False
+            
+            plotMinus: bool
+                Plots the stats for the minus shifted streak for each wavelenght. The cube and diff versions should be the same, if the subtraction is good. Default is False
+    """
+    #makes mask
+    satMask = _seed_to_mask(seed)
+
+    #* initialiases lists needed for each stat for each block
+
+    #*Cube
+
+    #full cube
+    waveMeans=[]
+    waveMeds=[]
+    waveStds = []
+
+    #streak
+    streakWaveMeans = []
+    streakWaveMeds = []
+    streakWaveStds = []
+
+    #plus shifted mask
+    plusWaveMeans= []
+    plusWaveMeds= []
+    plusWaveStds= []
+
+    #minus shifted mask
+    minusWaveMeans= []
+    minusWaveMeds = []
+    minusWaveStds = []
+
+    #*Diff Cube
+
+    #full cube
+    diffWaveMeans=[]
+    diffWaveMeds=[]
+    diffWaveStds = []
+
+    #position of streak, but after the subtraction
+    diffSubWaveMeans = []
+    diffSubWaveMeds = []
+    diffSubWaveStds = []
+
+    #plus shifted streak
+    diffPlusWaveMeans= []
+    diffPlusWaveMeds= []
+    diffPlusWaveStds= []
+
+    #minus shifted streak
+    diffMinusWaveMeans= []
+    diffMinusWaveMeds = []
+    diffMinusWaveStds = []
+
+
+    for i in range(len(lams)):
+        frame = cube[i,...]
+        diffFrame = diffCube[i,...]
+
+        #computes the stats
+        means, meds, stds = _frame_stats(frame, satMask, slope, shift)
+        diffMeans, diffMeds, diffStds = _frame_stats(diffFrame, satMask, slope, shift)
+
+        #appends to correct list
+        waveMeans.append(means[0])
+        streakWaveMeans.append(means[1])
+        plusWaveMeans.append(means[2])
+        minusWaveMeans.append(means[3])
+
+        waveMeds.append(meds[0])
+        streakWaveMeds.append(meds[1])
+        plusWaveMeds.append(meds[2])
+        minusWaveMeds.append(meds[3])
+
+        waveStds.append(stds[0])
+        streakWaveStds.append(stds[1])
+        plusWaveStds.append(stds[2])
+        minusWaveStds.append(stds[3])
+
+        diffWaveMeans.append(diffMeans[0])
+        diffSubWaveMeans.append(diffMeans[1])
+        diffPlusWaveMeans.append(diffMeans[2])
+        diffMinusWaveMeans.append(diffMeans[3])
+
+        diffWaveMeds.append(diffMeds[0])
+        diffSubWaveMeds.append(diffMeds[1])
+        diffPlusWaveMeds.append(diffMeds[2])
+        diffMinusWaveMeds.append(diffMeds[3])
+            
+        diffWaveStds.append(diffStds[0])
+        diffSubWaveStds.append(diffStds[1])
+        diffPlusWaveStds.append(diffStds[2])
+        diffMinusWaveStds.append(diffStds[3])
+
+
+    if plotting:
+        fig, ax = plt.subplots(3,1, sharex=True, figsize = (10,18))
+
+        #*Comparison between streak and subtraction is always done
+        ax[0].plot(lams, streakWaveMeans, label="Streak")
+        ax[0].plot(lams, diffSubWaveMeans, ls="--", label="Subtracked Streak")
+
+        ax[1].plot(lams, streakWaveMeds)
+        ax[1].plot(lams, diffSubWaveMeds, ls="--")
+
+        ax[2].plot(lams, streakWaveStds)
+        ax[2].plot(lams, diffSubWaveStds, ls="--")
+
+        ax[0].set(ylim = (-10,10),xlim=plotxLim, ylabel = "Means")
+        ax[1].set(ylim = (-10,10), ylabel = "Medians")
+        ax[2].set(ylim = (0,15), ylabel = "Stds", xlabel=f"Wavelength ($\AA$)")
+
+        #* Each other set is optional
+        if plotIm:
+            ax[0].plot(lams, waveMeans, label="Image")
+            ax[0].plot(lams, diffWaveMeans, ls="--", label="Difference Image")
+            ax[1].plot(lams, waveMeds)
+            ax[1].plot(lams, diffWaveMeds, ls="--")
+            ax[2].plot(lams, waveStds)
+            ax[2].plot(lams, diffWaveStds, ls="--")
+
+        if plotPlus:
+            ax[0].plot(lams, plusWaveMeans, label="+, Image")
+            ax[0].plot(lams, diffPlusWaveMeans, ls="--", label="+, Difference Image")
+            ax[1].plot(lams, plusWaveMeds)
+            ax[1].plot(lams, diffPlusWaveMeds, ls="--")
+            ax[2].plot(lams, plusWaveStds)
+            ax[2].plot(lams, diffPlusWaveStds, ls="--")
+                
+        if plotMinus:
+            ax[0].plot(lams, minusWaveMeans, label="-, Image")
+            ax[0].plot(lams, diffMinusWaveMeans, ls="--", label="-, Difference Image")
+            ax[1].plot(lams, minusWaveMeds)
+            ax[1].plot(lams, diffMinusWaveMeds, ls="--")
+            ax[2].plot(lams, minusWaveStds)
+            ax[2].plot(lams, diffMinusWaveStds, ls="--")
+        
+        ax[0].legend()
+
+        if savePath is not None:
+            fig.savefig(f'{savePath}wavelength_stats.png')
