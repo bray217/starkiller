@@ -1537,7 +1537,7 @@ def _frame_stats(image, mask, slope:float, shift:int=10, returnOffsetMasks:bool=
 
     from scipy.ndimage import shift as spyshift
     #shifts array with scipy based on slope of line
-    if np.abs(slope)<=1:
+    if abs(slope)<=1:
         # print("angle < 45 deg")
         plusMask = spyshift(mask,(shift,0))
         minusMask = spyshift(mask,(-shift,0))
@@ -1678,6 +1678,7 @@ def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=F
 
         xs = np.arange(sat_bright.shape[0])
 
+     
 
         fig, ax = plt.subplots()
 
@@ -1686,7 +1687,17 @@ def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=F
         ax.plot(xs, minus_bright, label = "-")
         ax.plot(xs, sub_bright, label = "Sub")
 
-        ax.set(xlabel="Position", ylabel="Brightness", ylim=(0, np.nanmax(sat_bright)+100))
+        maskSum = np.nansum(satMask, axis=0)
+
+        maskAt = np.nonzero(maskSum)
+        if len(maskAt) < len(xs)-20:
+            minx = maskAt[0][0]-10
+            maxx = maskAt[0][-1]+10 
+        else:
+            minx=0
+            maxx=len(xs)
+
+        ax.set(xlabel="Position", ylabel="Brightness",xlim=(minx,maxx), ylim=(np.nanmin(sub_bright), np.nanmax(sat_bright)+100))
         ax.legend()
 
         if savePath is not None:
@@ -1729,7 +1740,7 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
                 If not None, the plot is saved to f'{savePath}wavelength_stats.png', so trailing / is needed in the string. Default is None
                 
             plotxLim: length 2 tuple of floats | None
-                The wavelenght values in Angstroms to cut the x-axis to. Usefull for zooming in to see the differences. If None, plt decides based on the range of lams. Default is None.
+                The wavelength values in Angstroms to cut the x-axis to. Usefull for zooming in to see the differences. If None, plt decides based on the range of lams. Default is None.
 
             NOTE I recomend only one of the following be True. The plots get messy with too many things on them   
             
@@ -1791,10 +1802,17 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
     diffMinusWaveMeds = []
     diffMinusWaveStds = []
 
+    if plotxLim is not None:
+        minArg =np.nanargmin(np.abs(lams-plotxLim[0]))
+        maxArg = np.nanargmin(np.abs(lams-plotxLim[1]))
+        lams = lams[minArg:maxArg]
+    else:
+        minArg=0
+
 
     for i in range(len(lams)):
-        frame = cube[i,...]
-        diffFrame = diffCube[i,...]
+        frame = cube[i+minArg,...]
+        diffFrame = diffCube[i+minArg,...]
 
         #computes the stats
         means, meds, stds = _frame_stats(frame, satMask, slope, shift)
@@ -1836,18 +1854,22 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
         fig, ax = plt.subplots(3,1, sharex=True, figsize = (10,18))
 
         #*Comparison between streak and subtraction is always done
-        ax[0].plot(lams, streakWaveMeans, label="Streak")
-        ax[0].plot(lams, diffSubWaveMeans, ls="--", label="Subtracked Streak")
+        ax[0].plot(lams, streakWaveMeans, label="Streak", zorder=10)
+        ax[0].plot(lams, diffSubWaveMeans, ls="--", label="Subtracked Streak", zorder=11)
 
-        ax[1].plot(lams, streakWaveMeds)
-        ax[1].plot(lams, diffSubWaveMeds, ls="--")
+        ax[1].plot(lams, streakWaveMeds, zorder=10)
+        ax[1].plot(lams, diffSubWaveMeds, ls="--", zorder=11)
 
-        ax[2].plot(lams, streakWaveStds)
-        ax[2].plot(lams, diffSubWaveStds, ls="--")
+        ax[2].plot(lams, streakWaveStds, zorder=10)
+        ax[2].plot(lams, diffSubWaveStds, ls="--", zorder=11)
 
-        ax[0].set(ylim = (-10,10),xlim=plotxLim, ylabel = "Means")
-        ax[1].set(ylim = (-10,10), ylabel = "Medians")
-        ax[2].set(ylim = (0,15), ylabel = "Stds", xlabel=f"Wavelength ($\AA$)")
+        meanLim = np.max([np.abs(np.abs(np.nanmean(streakWaveMeans)) +np.abs(3*np.nanstd(streakWaveMeans))),np.abs(np.abs(np.nanmean(diffSubWaveMeans)) +np.abs(3*np.nanstd(diffSubWaveMeans)))])
+        medLim = np.max([np.abs(np.abs(np.nanmedian(streakWaveMeds)) +np.abs(3*np.nanstd(streakWaveMeds))),np.abs(np.abs(np.nanmedian(diffSubWaveMeds)) +np.abs(3*np.nanstd(diffSubWaveMeds)))])
+        stdLim = np.max([np.abs(np.abs(np.nanmean(streakWaveStds)) +np.abs(3*np.std(streakWaveStds))),np.abs(np.abs(np.nanmean(diffSubWaveStds)) +np.abs(3*np.std(diffSubWaveStds)))])
+
+        ax[0].set(ylim = (-meanLim,meanLim),xlim=plotxLim, ylabel = "Means")
+        ax[1].set(ylim = (-medLim, medLim), ylabel = "Medians")
+        ax[2].set(ylim = (0,stdLim), ylabel = "Stds", xlabel=f"Wavelength ($\AA$)")
 
         #* Each other set is optional
         if plotIm:
