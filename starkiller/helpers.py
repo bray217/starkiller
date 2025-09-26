@@ -1863,9 +1863,9 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
         ax[2].plot(lams, streakWaveStds, zorder=10)
         ax[2].plot(lams, diffSubWaveStds, ls="--", zorder=11)
 
-        meanLim = np.max([np.abs(np.abs(np.nanmean(streakWaveMeans)) +np.abs(3*np.nanstd(streakWaveMeans))),np.abs(np.abs(np.nanmean(diffSubWaveMeans)) +np.abs(3*np.nanstd(diffSubWaveMeans)))])
-        medLim = np.max([np.abs(np.abs(np.nanmedian(streakWaveMeds)) +np.abs(3*np.nanstd(streakWaveMeds))),np.abs(np.abs(np.nanmedian(diffSubWaveMeds)) +np.abs(3*np.nanstd(diffSubWaveMeds)))])
-        stdLim = np.max([np.abs(np.abs(np.nanmean(streakWaveStds)) +np.abs(3*np.std(streakWaveStds))),np.abs(np.abs(np.nanmean(diffSubWaveStds)) +np.abs(3*np.std(diffSubWaveStds)))])
+        meanLim = np.nanmax([np.abs(np.abs(np.nanmean(streakWaveMeans)) +np.abs(3*np.nanstd(streakWaveMeans))),np.abs(np.abs(np.nanmean(diffSubWaveMeans)) +np.abs(3*np.nanstd(diffSubWaveMeans)))])
+        medLim = np.nanmax([np.abs(np.abs(np.nanmedian(streakWaveMeds)) +np.abs(3*np.nanstd(streakWaveMeds))),np.abs(np.abs(np.nanmedian(diffSubWaveMeds)) +np.abs(3*np.nanstd(diffSubWaveMeds)))])
+        stdLim = np.nanmax([np.abs(np.abs(np.nanmean(streakWaveStds)) +np.abs(3*np.nanstd(streakWaveStds))),np.abs(np.abs(np.nanmean(diffSubWaveStds)) +np.abs(3*np.nanstd(diffSubWaveStds)))])
 
         ax[0].set(ylim = (-meanLim,meanLim),xlim=plotxLim, ylabel = "Means")
         ax[1].set(ylim = (-medLim, medLim), ylabel = "Medians")
