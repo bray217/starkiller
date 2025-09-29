@@ -1409,20 +1409,33 @@ def cut_bad_detections(cat):
     ind = (cat.rMeanPSFMag.values > 0) & (cat.iMeanPSFMag.values > 0) & (cat.zMeanPSFMag.values > 0)
     return cat.iloc[ind]
 
-def query_ps1(ra,dec,radius=5/60,only_stars=False,version='dr2'):
-    if (version.lower() != 'dr2') & (version.lower() != 'dr1'):
+def query_ps1(ra,dec,radius=5/60,only_stars=False,ref_filt='r',maglim=25,catversion='dr2'):
+    '''
+    radius is in degrees !!
+    '''
+    if (catversion.lower() != 'dr2') & (catversion.lower() != 'dr1'):
         m = 'Version must be dr2, or dr1'
         raise ValueError(m)
-    
-    html = f'https://catalogs.mast.stsci.edu/api/v0.1/panstarrs/{version.lower()}/mean?ra={ra}&dec={dec}&radius={radius}&nDetections.gte=5&pagesize=-1&format=csv'
+    coords = f'https://catalogs.mast.stsci.edu/api/v0.1/panstarrs/{catversion.lower()}/mean?ra={ra}&dec={dec}&radius={radius}'
+    conditions = f'&nDetections.gte=5&{ref_filt}MeanPSFMag.gte=0&{ref_filt}MeanPSFMag.lte={maglim}&pagesize=-1&format=csv'
+    html = coords + conditions
     try:
         cat = pd.read_csv(html)
         cat['ra'] = cat['raMean']
         cat['dec'] = cat['decMean']
         cat['r'] = cat['rMeanPSFMag']
+        cat['i'] = cat['iMeanPSFMag']
+        cat['g'] = cat['gMeanPSFMag']
+        cat['z'] = cat['zMeanPSFMag']
+        cat['y'] = cat['yMeanPSFMag']
     except pd.errors.EmptyDataError:
         print('No detections')
         cat = []
     cat = isolate_stars(cat,only_stars=only_stars)
     cat = cut_bad_detections(cat)
+    cat = cat.sort_values(ref_filt)
+
     return cat 
+
+
+

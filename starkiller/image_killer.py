@@ -1,5 +1,5 @@
 from .helpers import *
-
+import traceback
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
@@ -11,7 +11,6 @@ import astropy.units as u
 from copy import deepcopy
 from scipy import signal
 from starkiller.trail_psf import create_psf
-from calibrimbore.bill import get_ps1_region
 from scipy.ndimage import gaussian_filter, label
 from photutils.psf import PSFPhotometry
 from astropy.table import Table
@@ -73,16 +72,20 @@ def affine_positions(phot,mask=None):
 
 
 class starkiller_image():
-	def __init__(self,image,wcs,ref_filter='r',cal_maglim=[16,20],
+	def __init__(self,image,wcs,ref_filter='r',cal_maglim=[16,20],model_maglim=25,
 				 psf_profile='gaussian',wcs_correction=True,trail=True,psf_align=True,
 				 psf_preference='data',plot=True,run=True,numcores=5,rerun_cal=False,
-				 calc_psf_only=False,fuzzy=True,use_photutils=True,verbose=True):
+				 calc_psf_only=False,fuzzy=True,bkg_sub=True,cal_gr_lims=[-0.5,0.8],
+				 cutout_center=None,cutout_size=None,use_photutils=True,verbose=True):
 		
 		self.image = deepcopy(image)
+		self._bkg_sub = bkg_sub
 		self._clean_image()
 		self.wcs = wcs
 		self.ref_filter = ref_filter
 		self.cal_maglim = cal_maglim
+		self.cal_gr_lims = cal_gr_lims
+		self.model_maglim = model_maglim
 		self.fuzzy = fuzzy
 		self.verbose = verbose
 		self.numcores = numcores
@@ -91,10 +94,11 @@ class starkiller_image():
 		self._rerun_cal = rerun_cal
 		self._calc_psf_only = calc_psf_only
 		self._wcs_correction = wcs_correction
-		self._flux_correction = flux_correction
 		self._psf_align = psf_align
 		self.plot=plot
 		self._use_photutils = use_photutils
+		self.cutout_center = cutout_center
+		self.cutout_size = cutout_size
 		
 		if run:
 			self.run_image(trail)
@@ -111,28 +115,74 @@ class starkiller_image():
 		
 		m,med,std = sigma_clipped_stats(self.image,maxiters=10)
 		self.image[self.image < med - sigma*std]
+		if self._bkg_sub:
+			self._subtract_background()
+
+
+	def _subtract_background(self):
+		from astropy.stats import SigmaClip
+		from photutils.background import Background2D, MedianBackground
+		sigma_clip = SigmaClip(sigma=3.0)
+
+		bkg_estimator = MedianBackground()
+		self.bkg = Background2D(self.image, (50, 50), filter_size=(3, 3),
+						   sigma_clip=sigma_clip, bkg_estimator=bkg_estimator).background
+		self.image -= self.bkg
 
 	
 	
-	def get_ps1(self,size=5*60):
+	def get_ps1(self):
+		'''
+		Test to see if it has updated...
+		'''
 		ra,dec = self.wcs.all_pix2world(self.image.shape[1]//2,self.image.shape[0]//2,0)
 		coord = SkyCoord(ra,dec,unit='deg')
-		cat = query_ps1(coord.ra.deg,coord.dec.deg,5/60)
+		foot = self.wcs.calc_footprint()
+		diag = np.sqrt((foot[0,0] - foot[-2,0])**2 + (foot[0,1] - foot[-2,1])**2)
+		cal_cat = query_ps1(coord.ra.deg,coord.dec.deg,diag/2,ref_filt=self.ref_filter,maglim=self.cal_maglim[1]+2)
+		print('got cal_cat')
+		if self.cutout_size is None:
+			cat = query_ps1(coord.ra.deg,coord.dec.deg,diag/2,ref_filt=self.ref_filter,maglim=self.model_maglim)
+			#cat = cat.loc[cat[self.ref_filter] > 0]
+
+			x,y = self.wcs.all_world2pix(cat.ra.values,cat.dec.values,0)
+			cat['x'] = x; cat['y'] = y
+			cat['xint'] = np.round(x).astype(int)
+			cat['yint'] = np.round(y).astype(int)
+			# magic number for polar
+			fx = [180,1860]
+			fy = [0,970]
+			ind = (x < np.max(fx)-50) & (x > np.min(fx) + 50) & (y < np.max(fy) - 50) & (y > np.min(fy) + 50)
+			#cat = cat.iloc[ind]
+			#ind = np.isfinite(self.image[cat['yint'].values,cat['xint'].values])
+			#cat = cat.iloc[ind]
+			cat = cat
+		else:
+			ra,dec = self.wcs.all_pix2world(self.cutout_center[1],self.cutout_center[0],0)
+			coord = SkyCoord(ra,dec,unit='deg')
+			rad_pix = np.max(self.cutout_size)
+			c1 = self.wcs.all_pix2world(0,0,0)
+			c2 = self.wcs.all_pix2world(rad_pix,rad_pix,0)
+			diag = np.sqrt((c1[0] - c2[0])**2 + (c1[1] - c2[1])**2)
+			cat = query_ps1(coord.ra.deg,coord.dec.deg,diag/2,ref_filt=self.ref_filter,maglim=self.model_maglim)
+			cat = cat.loc[cat[self.ref_filter] > 0]
+			print('got cat')
 
 		x,y = self.wcs.all_world2pix(cat.ra.values,cat.dec.values,0)
 		cat['x'] = x; cat['y'] = y
 		cat['xint'] = np.round(x).astype(int)
 		cat['yint'] = np.round(y).astype(int)
-		# magic number for polar
-		fx = [180,1860]
-		fy = [0,970]
-		ind = (x < np.max(fx)-50) & (x > np.min(fx) + 50) & (y < np.max(fy) - 50) & (y > np.min(fy) + 50)
-		cat = cat.iloc[ind]
-		#ind = np.isfinite(self.image[cat['yint'].values,cat['xint'].values])
-		#cat = cat.iloc[ind]
-		cat = cat.sort_values('r')
-		cat = cat.iloc[np.isfinite(cat.r.values)]
-		self.cat = cat
+
+		x,y = self.wcs.all_world2pix(cal_cat.ra.values,cal_cat.dec.values,0)
+		cal_cat['x'] = x; cal_cat['y'] = y
+		cal_cat['xint'] = np.round(x).astype(int)
+		cal_cat['yint'] = np.round(y).astype(int)
+
+		gr = cal_cat['g'].values - cal_cat['r'].values
+		ind = (gr > self.cal_gr_lims[0]) & (gr < self.cal_gr_lims[1]) & (cal_cat['g'].values > 0)
+
+		self.cat = cat 
+		self.cal_cat = cal_cat.iloc[ind]
 
 	def _make_bright_mask(self):
 		m,med,std = sigma_clipped_stats(self.image)
@@ -141,7 +191,7 @@ class starkiller_image():
 	def _find_fuzzy_mask(self,sig_size=5):
 		if self.fuzzy:
 			m,med,std = sigma_clipped_stats(self.image)
-			labeled, nr_objects = label(self.image > med + sig_size*std,) 
+			labeled, nr_objects = label(self.image > med + sig_size*std) 
 
 			obj_size = []
 			obj_counts = []
@@ -153,7 +203,8 @@ class starkiller_image():
 			obj_size = np.array(obj_size)
 			obj_counts = np.array(obj_counts)
 
-			ind = obj_size > 10
+			m, med, std = sigma_clipped_stats(obj_size)
+			ind = obj_size > med
 
 			m, med, std = sigma_clipped_stats(obj_size[ind])
 
@@ -165,11 +216,21 @@ class starkiller_image():
 			fuzzy_mask = signal.fftconvolve(fuzzy_mask,np.ones((9,9)),mode='same')
 			fuzzy_mask = fuzzy_mask > 0.5
 		else:
-			fuzzy_mask = np.zeros_like(self.image)
+			fuzzy_mask = np.zeros_like(self.image) > 1
 		
 		self.fuzzy_mask = fuzzy_mask
 
-		
+	def _fill_params(self):
+		"""
+		Fill the parameters for the cube simulator.
+		"""
+		self.y_length = 30 
+		self.x_length = 30 
+		self.angle = 0
+		self.trail = 1
+		self.wcs_shift = np.array([0,0,0])
+
+
 	def _find_sources_cluster(self,trail):
 		"""
 		Find sources in the image using the cluster algorithm. 
@@ -180,7 +241,9 @@ class starkiller_image():
 			obj_size += [np.sum(labeled==i)]
 		obj_size = np.array(obj_size)
 		image_size = self.image.shape[0] * self.image.shape[1]
-		m,med,std = sigma_clipped_stats(obj_size[obj_size > 10])
+		m,med, std = sigma_clipped_stats(obj_size)
+		ind = obj_size > med
+		m,med,std = sigma_clipped_stats(obj_size[ind])
 		targs = np.where((obj_size > 10) & (obj_size<med + 3*std))[0]
 		#good = []
 		#for i in range(len(targs)):
@@ -231,8 +294,8 @@ class starkiller_image():
 		iso = (isox > np.nanmedian(dx)) & (isoy > np.nanmedian(dy))
 		#dx = dx[iso]; dy = dy[iso]; sign = sign[iso]
 		buffer = np.nanmin([np.nanmedian(dy),np.nanmedian(dx)]) *0.6
-		if buffer < 10:
-			buffer = 10
+		if buffer < 20:
+			buffer = 20
 		#print('buffered: ',buffer)
 
 		self.y_length = int((np.nanmedian(dy)+buffer) / 2)
@@ -284,8 +347,9 @@ class starkiller_image():
 		#else:
 		#	lim = self.cal_maglim
 		#cat_ind = (self.cal_maglim[1] > self.cat[self.ref_filter].values) & (self.cal_maglim[0] < self.cat[self.ref_filter].values)
-		cat_ind = self.cat[self.ref_filter].values < 25 # hard code for now
-		x, y = self.wcs.all_world2pix(self.cat.ra.values[cat_ind],self.cat.dec.values[cat_ind],0)
+		cat_ind = self.cal_cat[self.ref_filter].values < 25 # hard code for now
+		#x, y = self.wcs.all_world2pix(self.cat.ra.values[cat_ind],self.cat.dec.values[cat_ind],0)
+		x, y = self.wcs.all_world2pix(self.cal_cat.ra.values,self.cal_cat.dec.values,0)
 		# brute force it
 		X,Y = np.meshgrid(np.arange(-50,50,5),np.arange(-50,50,5))
 		positions = np.vstack([X.ravel(), Y.ravel(),X.ravel()*0]).T
@@ -304,7 +368,7 @@ class starkiller_image():
 
 		self.wcs_shift = res2.x
 
-	def _transform_coords(self,plot=False):
+	def _transform_coords(self,cat,plot=False):
 		"""
 		Transform the coordinates of the catalog to match the image.
 
@@ -316,30 +380,32 @@ class starkiller_image():
 		if plot is None:
 			plot = self.plot
 
-		x, y = self.wcs.all_world2pix(self.cat.ra.values,self.cat.dec.values,0)
+		x, y = self.wcs.all_world2pix(cat.ra.values,cat.dec.values,0)
 
 		xx,yy = transform_coords(x,y,self.wcs_shift,self.image)
-		ys, xs = np.where(np.isfinite(self.image))
-		d = np.sqrt((xx[:,np.newaxis] - xs[np.newaxis,:])**2 + (yy[:,np.newaxis] - ys[np.newaxis,:])**2)
-		md = np.nanmin(d,axis=1)
-		if self.trail > 1:
-			ind = md < (self.trail / 2)
-		else:
-			ind = md < (20 / 2)
 
-		self.cat['x'] = xx
-		self.cat['y'] = yy
-		self.cat = self.cat.iloc[ind]
-		self.cat['xint'] = (self.cat['x'].values + 0.5).astype(int)
-		self.cat['yint'] = (self.cat['y'].values + 0.5).astype(int)
+		#finite = signal.fftconvolve(np.isfinite(self.image),np.ones([self.x_length,self.y_length]),mode='same') > 0.
+		finite = np.isfinite(self.image)
+		#overlap = (yy+self.y_length > 0) & (yy+self.y_length < finite.shape[0]) & (xx+self.x_length > 0) & (xx+self.x_length < finite.shape[1])
+		overlap = (yy > 0) & (yy < finite.shape[0]) & (xx > 0) & (xx < finite.shape[1])
+		#ind = finite[(yy+self.y_length).astype(int)[overlap],(xx+self.x_length).astype(int)[overlap]] # precision not needed here
+		ind = finite[(yy).astype(int)[overlap],(xx).astype(int)[overlap]] # precision not needed here
+		overlap[overlap] = ind
+		cat['x'] = xx
+		cat['y'] = yy
+		cat = cat.iloc[overlap]
+		cat['xint'] = np.round(cat['x'].values,0).astype(int)
+		cat['yint'] = np.round(cat['y'].values,0).astype(int)
 
 		if plot:
 			plt.figure()
 			plt.title('Matching image sources with catalog')
 			plt.imshow(self.image,vmin=np.nanpercentile(self.image,16),vmax=np.nanpercentile(self.image,85),cmap='gray',origin='lower')
 			plt.plot(x,y,'C3x',label='Catalog')
-			plt.plot(self.cat['x'],self.cat['y'],'C1*',label='Corrected')
+			plt.plot(cat['x'],cat['y'],'C1*',label='Corrected')
 			plt.legend()
+
+		return cat
 		
 	def complex_isolation_cals(self,xdist=8,dmag=2):
 		"""
@@ -353,13 +419,18 @@ class starkiller_image():
 			Difference in magnitude between sources to consider.
 
 		"""
-		xx = self.cat.xint.values; yy = self.cat.yint.values
+		mags = self.cal_cat[self.ref_filter].values
+		mag_ind = self.cal_maglim[1] + dmag > mags
+		mags = mags[mag_ind]
+		cat = deepcopy(self.cal_cat).iloc[mag_ind]
+
+		xx = self.cal_cat.xint.values[mag_ind]; yy = self.cal_cat.yint.values[mag_ind]
 		ang = np.radians(self.angle)
 		cx = self.image.shape[1]/2; cy = self.image.shape[0]/2
 		xxx = cx + ((xx-cx)*np.cos(ang)-(yy-cy)*np.sin(ang))
 		yyy = cy + ((xx-cx)*np.sin(ang)+(yy-cy)*np.cos(ang))
 
-		mags = self.cat[self.ref_filter].values
+		
 		dmags = mags[:,np.newaxis] - mags[np.newaxis,:]
 		ind = dmags > dmag
 
@@ -383,40 +454,43 @@ class starkiller_image():
 		else:
 			isoind = (np.nanmin(dy,axis=0) > xdist) & (mags < self.cal_maglim[1]) & (mags > self.cal_maglim[0])
 
-		ind = ((self.cat['x'].values.astype(int) < self.image.shape[1]) & 
-				(self.cat['y'].values.astype(int) < self.image.shape[0]) & 
-				(self.cat['x'].values.astype(int) > 0) & 
-				(self.cat['y'].values.astype(int) > 0))
-		indo = np.isfinite(self.image[self.cat['y'].values[ind].astype(int),self.cat['x'].values[ind].astype(int)])
+		ind = ((cat['x'].values.astype(int) < self.image.shape[1] - self.x_length) & 
+				(cat['y'].values.astype(int) < self.image.shape[0] - self.y_length) & 
+				(cat['x'].values.astype(int) > 0 + self.x_length) & 
+				(cat['y'].values.astype(int) > 0 + self.y_length))
+		indo = np.isfinite(self.image[cat['y'].values[ind].astype(int),cat['x'].values[ind].astype(int)])
 		ind[ind] = indo
+		mag_ind
 		self.cat['fuzz'] = 0
-		#if np.nansum(self.fuzzy_mask) > 0:
-		#	fuzz = (self.fuzzy_mask[self.cat['y'].values[ind].astype(int),self.cat['x'].values[ind].astype(int)] == 1)
-		#	self.cat['fuzz'].iloc[ind] = fuzz * 1
-		#	ind[ind] = ~fuzz
+		if np.nansum(self.fuzzy_mask) > 0:
+			fuzz = (self.fuzzy_mask[cat['y'].values[ind].astype(int),cat['x'].values[ind].astype(int)] == 1)
+			#cat['fuzz'].iloc[ind] = fuzz * 1
+			#ind[ind] = ~fuzz
 
-
-		self.cat['cal_source'] = 0 
-		self.cat['cal_source'].iloc[isoind & ind] = 1
-		self.cals = self.cat.iloc[ind & isoind]
+		index = deepcopy(mag_ind)
+		index[index] = ind & isoind
+		self.cal_cat['cal_source'] = 0 
+		self.cal_cat.loc[index,'cal_source'] = 1
+		self.cal_cat = self.cal_cat.iloc[index]
 		
 	def _isolate_cals(self):
 		"""
 		Isolate the calibration sources in the image. Creates a cal_cuts variable containing the cutouts and good_cals.
 
 		"""
-		cals = self.cat.iloc[self.cat['cal_source'].values == 1]
+		cals = self.cal_cat
 		star_cuts, good = get_star_cuts(self.x_length,self.y_length,self.image,cals)
 		mags = cals[self.ref_filter].values
 		ind = (mags < self.cal_maglim[1]) & (mags > self.cal_maglim[0])
 		if np.sum(ind) < 1:
 			m = f'{np.sum(ind)} targets above the mag lim, limit must be increased.\n Available mags: {cals[self.ref_filter].values}'
 			raise ValueError(m)
-		self.cat.loc[(self.cat['cal_source'].values == 1),'cal_source'] = good & ind
+		self.cal_cat.loc[(self.cal_cat['cal_source'].values == 1),'cal_source'] = good & ind
 		self.cal_cuts = star_cuts[good & ind]
 		
-	def make_psf(self,fine_shift=None,data_containment_lim=0.95):
+	def make_psf(self,fine_shift=None,data_containment_lim=0.95): 
 		"""
+		NOT CURRENTLY USED
 		Make the psf for the image. Adds in the psf and psf_param variables.
 
 		Parameters:
@@ -504,6 +578,7 @@ class starkiller_image():
 
 	def _fine_psf_shift(self,shifts,plot=None):
 		"""
+		NOT CURRENTLY USED
 		Perform a fine shift to the catalog positions based on the psf shifts.
 
 		Parameters:
@@ -544,6 +619,7 @@ class starkiller_image():
 
 	def _psf_isolation(self,dmag = 2,containment=0.9,overlap_lim=0.2):
 		"""
+		NOT CURRENTLY USED
 		Identifies the isolated sources based on the PSF. Creates a cal_cuts variable containing the cutouts and good_cals.
 
 		Parameters:
@@ -664,7 +740,7 @@ class starkiller_image():
 	def calc_zeropoint(self,plot=False):
 		cal = self.cat.loc[self.cat['cal_source'] == 1]
 		sysmag = -2.5*np.log10(cal['psf_flux'])
-		m,med,std = sigma_clipped_stats(cal[self.ref_filter]-sysmag,maxiters=10)
+		m,med,std = sigma_clipped_stats(cal[self.ref_filter]-sysmag,sigma=2,maxiters=10)
 		self.zp = med
 		self.std_zp = std
 		if plot:
@@ -683,10 +759,11 @@ class starkiller_image():
 			data = False
 		scene = cube_simulator(self.image,psf=self.psf,catalog=self.cat,datapsf=data)
 	
-	def make_epsf(self,oversample=2,progress_bar=True):
+	def make_epsf(self,oversample=2,progress_bar=True,epsf_noise_lim=5e-4):
 		
-		cals = self.cat.loc[self.cat['cal_source']==1]
+		cals = self.cal_cat
 		cuts = self.cal_cuts
+		cuts[np.isnan(cuts)] = 0
 		init = Table()
 		init['x_init'] = [cuts.shape[2]//2]
 		init['y_init'] = [cuts.shape[1]//2]
@@ -704,17 +781,21 @@ class starkiller_image():
 		else:
 			normrad = 5
 		normrad = 10
-		epsf_builder = EPSFBuilder(oversampling=oversample,norm_radius=normrad,recentering_boxsize=(5, 5), maxiters=40, progress_bar=progress_bar)
+		epsf_builder = EPSFBuilder(oversampling=oversample,norm_radius=normrad,recentering_boxsize=(5, 5), 
+								   maxiters=40, progress_bar=progress_bar)
 		epsf, fitted_stars = epsf_builder(stars)
+		#epsf.data[self.epsf.data < epsf_noise_lim] = 0
 		self.epsf = epsf
 	
 	
-	def psf_phot(self,x=None,y=None,flux=None,x_bound=5,y_bound=5,group_sep=20,background=False):
+	def psf_phot(self,x=None,y=None,flux=None,image=None,x_bound=5,y_bound=5,group_sep=20,background=False):
 	
 		if (x is None) | (y is None):
 			x = self.cat['x'].values
 			y = self.cat['y'].values
-
+		if image is None:
+			image = self.image
+			image[np.isnan(image)] = 0
 		grouper = SourceGrouper(min_separation=20)
 
 		fit_shape = (self.cal_cuts.shape[1],self.cal_cuts.shape[2])
@@ -726,7 +807,7 @@ class starkiller_image():
 		else:
 			bkg = None
 
-		psfphot = PSFPhotometry(self.epsf, fit_shape, finder=None,aperture_radius=2,
+		psfphot = PSFPhotometry(self.epsf, fit_shape, finder=None,aperture_radius=10,
 								 xy_bounds=(x_bound,y_bound),localbkg_estimator=bkg,grouper=grouper)
 
 		init_params = QTable()
@@ -735,7 +816,7 @@ class starkiller_image():
 		if flux is not None:
 			init_params['flux'] = flux
 
-		phot = psfphot(self.image,init_params=init_params)
+		phot = psfphot(image,init_params=init_params)
 		return phot, psfphot
 
 
@@ -743,68 +824,133 @@ class starkiller_image():
 		if plot is None:
 			plot = self.plot
 
-		phot, psfphot = self.psf_phot()
+		cal = self.cal_cat
+		x = deepcopy(cal['x'].values)
+		y = deepcopy(cal['y'].values)
 
-		ind = self.cat['cal_source'].values == 1
-		cal = self.cat.loc[self.cat['cal_source'] == 1]
+		phot, psfphot = self.psf_phot(x=x,y=y)
+
 		sysmag = -2.5*np.log10(phot['flux_fit'])
-		m,med,std = sigma_clipped_stats(cal[self.ref_filter]-sysmag[ind],maxiters=10)
+		m,med,std = sigma_clipped_stats(cal[self.ref_filter]-sysmag,maxiters=10)
 		self.zp = med
 		self.std_zp = std
 
 		if plot:
 			plt.figure()
-			plt.fill_between(cal[self.ref_filter],med-std,med+std,color='C1',alpha=0.1)
-			plt.plot(cal[self.ref_filter],cal[self.ref_filter]-sysmag[ind],'.')
+			plt.fill_between([self.cal_maglim[0]-.1,self.cal_maglim[1]+.1],med-std,med+std,color='C1',alpha=0.1)
+			plt.plot(cal[self.ref_filter],cal[self.ref_filter]-sysmag,'.')
 			label = r'zp$_{\rm sys}= $' + str(np.round(self.zp,2)) + r'$\pm$' + str(np.round(self.std_zp,2))
 			plt.axhline(med,color='C1',label=label)
 			plt.xlabel(f'{self.ref_filter} mag')
 			plt.ylabel(f'Zeropoint ({self.ref_filter} - sysmag)')
+			plt.xlim(self.cal_maglim[0]-.1,self.cal_maglim[1]+.1)
 			plt.legend()
 
-		init_params = QTable()
-		m,med,xstd = sigma_clipped_stats((phot['x_init']-phot['x_fit']))
-		x = self.cat['x'].values - med
-		m,med,ystd = sigma_clipped_stats((phot['y_init']-phot['y_fit']))
-		y = self.cat['y'].values - med
-		flux = 10**((self.cat['r'].values-self.zp)/-2.5)
-		xy_bound=np.max([xstd,ystd])
+		m,xmed,xstd = sigma_clipped_stats((phot['x_init']-phot['x_fit']))
+		m,ymed,ystd = sigma_clipped_stats((phot['y_init']-phot['y_fit']))
 
-		phot2, psfphot2 = self.psf_phot(x=x,y=y,flux=flux,x_bound=xstd*5,y_bound=ystd*5)
+		magind = self.cat[self.ref_filter].values < self.model_maglim
+		x = (deepcopy(self.cat['x'].values) - xmed)[magind]
+		y = (deepcopy(self.cat['y'].values) - ymed)[magind]
+		flux = (10**((self.cat[self.ref_filter].values-self.zp)/-2.5))[magind]
+		ind = np.ones_like(x) > 0
+		if (self.cutout_center is not None): 
+			if (self.cutout_size is not None):
+				x = x - self.cutout_center[1] + self.cutout_size[1]//2
+				y = y - self.cutout_center[0] + self.cutout_size[0]//2
+				ind = (x > 1) & (x < self.cutout_size[1] - 1) & (y > 1) & (y < self.cutout_size[0] - 1)
+				x = x[ind]; y = y[ind]; flux = flux[ind]
 
-		x_final, y_final = affine_positions(phot2,~self.fuzzy_mask)
-		self.cat['x_final'] = x_final
-		self.cat['y_final'] = y_final
+				xlow = int(self.cutout_center[1] - self.cutout_size[1]//2)
+				xup = int(self.cutout_center[1] + self.cutout_size[1]//2 + 1)
+				ylow = int(self.cutout_center[0] - self.cutout_size[0]//2)
+				yup = int(self.cutout_center[0] + self.cutout_size[0]//2 + 1)
+				image = self.image[ylow:yup,xlow:xup]
+				fuzzy_mask = self.fuzzy_mask[ylow:yup,xlow:xup]
+			else:
+				m = 'A cutout size must be provided with a cutout center!'
+				raise ValueError(m)
+		else:
+			image = self.image
+			fuzzy_mask = self.fuzzy_mask
 
-		psfphot2._model_image_parameters[1]['flux'] = 10**((self.cat[self.ref_filter].values-self.zp)/-2.5)
+		phot2, psfphot2 = self.psf_phot(x=x,y=y,flux=flux,image=image,x_bound=xstd*5,y_bound=ystd*5)
+		test = psfphot2.make_model_image(image.shape)
+		self._psfphot2 = psfphot2
+		self._phot2 = phot2
+
+		x_final, y_final = affine_positions(phot2,~fuzzy_mask)
+		ind_final = deepcopy(magind)
+		ind_final[~ind] = False
+		self.cat['x_final'] = np.nan#x_final
+		self.cat['y_final'] = np.nan#y_final
+		if (self.cutout_center is None):
+			self.cat.loc[ind_final,'x_final'] = x_final
+			self.cat.loc[ind_final,'y_final'] = y_final
+		else:
+			self.cat.loc[ind_final,'x_final'] = x_final + self.cutout_center[1] - self.cutout_size[1]//2
+			self.cat.loc[ind_final,'y_final'] = y_final + self.cutout_center[0] - self.cutout_size[0]//2
+
+		psfphot2._model_image_parameters[1]['flux'] = flux
 		psfphot3 = deepcopy(psfphot2)
 		psfphot3._model_image_parameters[1]['x_0'] = x_final
 		psfphot3._model_image_parameters[1]['y_0'] = y_final
-		self.sim = psfphot3.make_model_image(self.image.shape)
-		self.diff = psfphot3.make_residual_image(self.image,psf_shape=self._psf_fit_shape)
+		self.sim = psfphot3.make_model_image(image.shape)
+		self.diff = psfphot3.make_residual_image(image,psf_shape=self._psf_fit_shape)
+
 	
-	def plot_diff(self,xlim=None,ylim=None,percentile=[16,99.9],savename=None):
+	def plot_diff(self,xlim=None,ylim=None,percentile=[16,99.9],savename=None,include_sim=True):
+		image = self.image
+		cx = self.cat['x_final'].values
+		cy = self.cat['y_final'].values
+		if self.cutout_center is not None:
+			xlow = int(self.cutout_center[1] - self.cutout_size[1]//2)
+			xup = int(self.cutout_center[1] + self.cutout_size[1]//2 + 1)
+			ylow = int(self.cutout_center[0] - self.cutout_size[0]//2)
+			yup = int(self.cutout_center[0] + self.cutout_size[0]//2 + 1)
+			image = image[ylow:yup,xlow:xup]
+			cx = cx - self.cutout_center[1] + self.cutout_size[1]//2
+			cy = cy - self.cutout_center[0] + self.cutout_size[0]//2
+
 		if xlim is None:
-			xlim = [0,self.image.shape[1]]
+			xlim = [0,image.shape[1]]
 		if ylim is None:
-			ylim = [0,self.image.shape[0]]
-		
+			ylim = [0,image.shape[0]]
+		xlim = np.array(xlim); ylim = np.array(ylim)
+		xlim[0] -= 0.5; xlim[1] += 0.5
+		ylim[0] -= 0.5; ylim[1] += 0.5
+
 		norm = ImageNormalize(self.diff[ylim[0]:ylim[1],xlim[0]:xlim[1]], 
 							  interval=AsymmetricPercentileInterval(percentile[0],percentile[1]),
 							  stretch=SqrtStretch())
-		plt.figure(figsize=(9,5))
-		plt.subplot(121)
+		if include_sim:
+			panels = 3
+			plt.figure(figsize=(9,5))
+		else:
+			panels = 2
+			plt.figure(figsize=(12,4))
+		
+		plt.subplot(1,panels,1)
 		plt.title('Raw image')
-		plt.imshow(self.image,norm=norm,cmap='grey')
-		plt.scatter(self.cat['x_final'],self.cat['y_final'],marker='o',ec='C1',fc='None',s=50)
+		plt.imshow(image,norm=norm,cmap='grey')
+		plt.scatter(cx,cy,marker='o',ec='C1',fc='None',s=50)
 		plt.ylim(ylim[0],ylim[1])
 		plt.xlim(xlim[0],xlim[1])
-		plt.subplot(122)
+		if include_sim:
+			plt.subplot(1,panels,2)
+			plt.title('Simulated image')
+			plt.imshow(self.sim,norm=norm,cmap='grey')
+			plt.scatter(cx,cy,marker='o',ec='C1',fc='None',s=50)
+			plt.ylim(ylim[0],ylim[1])
+			plt.xlim(xlim[0],xlim[1])
+			plt.subplot(1,panels,3)
+		else:
+			plt.subplot(1,panels,2)
 		plt.title('Starkilled image')
 		plt.imshow(self.diff,norm=norm,cmap='grey')
 		plt.ylim(ylim[0],ylim[1])
 		plt.xlim(xlim[0],xlim[1])
-		plt.scatter(self.cat['x_final'],self.cat['y_final'],marker='o',ec='C1',fc='None',s=50)
+		plt.scatter(cx,cy,marker='o',ec='C1',fc='None',s=50)
 		plt.tight_layout()
 		if savename is not None:
 			plt.savefig(savename,bbox_inches='tight',dpi=300)
@@ -820,42 +966,56 @@ class starkiller_image():
 		trail : boolean
 			Whether or not to estimate the trail angle. Turn off if this is a siderially tracked cube
 		"""
-		#try:
-		#self._load_cube()
-		#self._get_cat(self.__download_cat)
-		self._make_bright_mask()
-		self._find_fuzzy_mask()
-		self.get_ps1()
-		if self._wcs_correction:
-			self._find_sources_cluster(trail)
-			self._match_by_shift()
-		else:
-			self._fill_params()
-		self._transform_coords()
-
-		if self.verbose:
-			print('Coords transformed')
-		#self._identify_cals()
-		self.complex_isolation_cals()
-		self._isolate_cals()
-		if self._use_photutils:
-			self.make_epsf()
-			self.photutils_sequence()
-			
-		else:
-			self.make_psf()
-
-			if self._rerun_cal:
-				if self.verbose:
-					print('Rerunning cal selection with psf sources')
-				#self._psf_isolation()
-				self.make_psf()#fine_shift=True)
-				#self._psf_isolation()
-			self._psf_contained_check()
+		try:
 			if self.verbose:
-				print('Made PSF')
-			if self._calc_psf_only:
-				print('Exiting')
-				return
-		
-			
+				print('making bright mask')
+			self._make_bright_mask()
+			if self.verbose:
+				print('making fuzzy mask')
+			self._find_fuzzy_mask()
+			if self.verbose:
+				print('getting ps1')
+			self.get_ps1()
+
+			if self._wcs_correction:
+				if self.verbose:
+					print('Finding WCS offset')
+				self._find_sources_cluster(trail)
+				self._match_by_shift()
+			else:
+				self._fill_params()
+
+			if self.verbose:
+				print('Coord transform')			
+			self.cal_cat = self._transform_coords(self.cal_cat)
+			self.cat = self._transform_coords(self.cat)
+
+			#self._identify_cals()
+			if self.verbose:
+				print('Get calibration sources')
+			self.complex_isolation_cals()
+			self._isolate_cals()
+			if self._use_photutils:
+				self.make_epsf()
+				self.photutils_sequence()
+				
+			else:
+				self.make_psf()
+
+				if self._rerun_cal:
+					if self.verbose:
+						print('Rerunning cal selection with psf sources')
+					#self._psf_isolation()
+					self.make_psf()#fine_shift=True)
+					#self._psf_isolation()
+				self._psf_contained_check()
+				if self.verbose:
+					print('Made PSF')
+				if self._calc_psf_only:
+					print('Exiting')
+					return
+		except Exception:
+			print(traceback.format_exc())
+
+
+				
