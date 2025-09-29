@@ -383,6 +383,9 @@ class sat_killer():
         self.sat_psfs = []
         for i in range(self.sat_num):
             if 'gaussian' in self.star_psf.psf_profile:
+
+                #TODO create first, then fit before adding to list. 
+
                 self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
                                            length = self.lengths[i],stddev=self.star_psf.stddev)] #! another multiply by 2 of cutdims. Now we are at 1.5 times the original lenght??? (ble)
             elif 'moffat' in self.star_psf.psf_profile:
