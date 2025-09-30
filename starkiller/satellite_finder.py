@@ -52,8 +52,8 @@ class sat_killer():
         image = np.nanmedian(self.cube, axis = 0)
 
         #*Sets `quicklook-like` bounds, and applies them to the image
-        vmin = np.nanpercentile(image, 1).round(2) 
-        vmax = np.nanpercentile(image, 98).round(2)
+        vmin = np.nanpercentile(image, 16).round(2) 
+        vmax = np.nanpercentile(image, 92).round(2)
         image[image>=vmax] = vmax
         image[image<=vmin] = vmin
 
@@ -64,12 +64,12 @@ class sat_killer():
         self.image = image
 
         #*Check to make sure the image was made when a line could be seen. 
-        # fig,  ax = plt.subplots()
-        # ax.imshow(image, origin="lower", cmap="grey")
-        # if self.savename is not None:
-        #     fig.savefig(f"{self.savename}sat_image.png")
-        # else:
-        #     fig.savefig("./sat_image.png")
+        fig,  ax = plt.subplots()
+        ax.imshow(image, origin="lower", cmap="grey")
+        if self.savename is not None:
+            fig.savefig(f"{self.savename}sat_image.png")
+        else:
+            fig.savefig("./sat_image.png")
 
     
     def _set_threshold(self,sigma):
