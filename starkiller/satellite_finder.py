@@ -386,8 +386,11 @@ class sat_killer():
 
                 #TODO create first, then fit before adding to list. 
 
-                self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
-                                           length = self.lengths[i],stddev=self.star_psf.stddev)] #! another multiply by 2 of cutdims. Now we are at 1.5 times the original lenght??? (ble)
+                thisPsf= create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],length = self.lengths[i],stddev=self.star_psf.stddev) #! another multiply by 2 of cutdims. Now we are at 1.5 times the original lenght??? (ble)
+                
+                # thisPsf.fit_psf(np.nanmedian(self.cube, axis=0))
+
+                self.sat_psfs += [thisPsf]
             elif 'moffat' in self.star_psf.psf_profile:
                 self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
                                            length = self.lengths[i],alpha=self.star_psf.alpha,beta=self.star_psf.beta)]
@@ -401,6 +404,7 @@ class sat_killer():
         for i in range(self.sat_num):
             cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0] #! still at 3/4 lenght 
             psf = self.sat_psfs[i]
+            psf.fit_psf(np.nanmedian(cut, axis=0))
             psf.fit_pos(np.nanmean(cut,axis=0),range=5)
             xoff = psf.source_x; yoff = psf.source_y
 
