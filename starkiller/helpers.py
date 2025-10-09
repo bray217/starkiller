@@ -287,7 +287,7 @@ def get_star_cuts(x_length,y_length,image,cat,norm=False):
         star_cuts += [c]
         nancheck = np.sum(np.isnan(c))
         pixs = c.shape[0] * c.shape[1]
-        if ((mx > 5) & (mx < c.shape[1]-5) & (my > 5) & (my < c.shape[0]-5)).any() & (nancheck/pixs<0.2):
+        if ((mx > 2) & (mx < c.shape[1]-2) & (my > 2) & (my < c.shape[0]-2)).any() & (nancheck/pixs<0.2):
             good += [True]
         else:
             good += [False]
