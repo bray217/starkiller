@@ -13,11 +13,11 @@ from scipy.signal import find_peaks
 
 
 class sat_killer():
-    def __init__(self,cube,psf,wavelength=None,sat_thickness=17,sat_sigma=10,
+    def __init__(self,cube,psf,wavelength=None,sat_thickness=17,sat_sigma=3.0,
                  savename=None,y_close=5,angle_close=2,dist_close=10,num_cores=5,run=True):
         self.cube = cube
         self.star_psf = psf
-        self.thickness = sat_thickness
+        self.thickness = sat_thickness #TODO ble thinks this should be dynamically set. Maybe with the PSF thickness
         self.savename = savename
         #self.y_close = y_close
         #self.angle_close = angle_close
@@ -26,27 +26,96 @@ class sat_killer():
         self.streak_coef = []
 
         if run:
-            self._make_image()
-            self._set_threshold(sat_sigma)
-            self._dilate()
-            self._edges()
-            self._lines()
+            
+            
+            #* different bounds to iterate over 
+
+            #! should really only do this if there is a known satellite
+            #* the scaling wasn't the issue. 
+            # mins = [1,2,5,10,16]
+            # maxs = [99,98,95,90,84] 
+            # for minP in mins:  
+            #     if len(self.streak_coef) > 0:
+            #             break #if it is here, a streak has been detected.   
+            #     for maxP in maxs:
+            #         self._make_image(minPer=minP, maxPer=maxP)
+            #         self.__detection_funcs(sat_sigma)
+            #         if len(self.streak_coef) > 0:
+            #             print(f"The minP is {minP} and the maxP is {maxP}")
+            #             break #if it is here, a streak has been detected. 
+            #         else:
+            #             print(f"This min/max pair did not work ({minP}, {maxP})")
+
+
+            minP=1
+            maxP=98
+
+            self._make_image(minPer=minP, maxPer=maxP)
+                                    # #* (ble) Looks like these are also done in __detection_funcs()
+                                    # self._set_threshold(sat_sigma)
+                                    # self._dilate()
+                                    # self._edges()
+                                    # self._lines()
+                                    # #* ^ 
             self.__detection_funcs(sat_sigma)
+
             if len(self.streak_coef) > 0:
                 self.make_mask()
                 self._detected()
                 if self.sat_num > 0:
                     self.make_satellite_psf()
+                    #? self.fitpsf() should be here??
                     self._fit_spec()
 
-    def _make_image(self):
-        image = np.nanmedian(self.cube,axis=0)
-        self.image = image - np.nanmedian(image)
-    
+    def _make_image(self, minPer:float=2.0,maxPer:float=98.0):
+        """
+        Makes a 'quicklook like' image
+
+        Parameters
+        ----------
+
+            minPer: float, optional
+                The lower bound percentile cutoff. Default is 2.0
+
+            maxPer
+                The upper bound percentile cutoff. Default is 98.0
+        """
+        
+        #* how rri did it, which was struggling to catch streaks
+        # image = np.nanmedian(self.cube,axis=0)
+        # self.image = image - np.nanmedian(image)
+
+        #*ble, to make it more like a quicklook, which we know works for streak detection
+        image = np.nanmedian(self.cube, axis = 0)
+
+        #*Sets `quicklook-like` bounds, and applies them to the image
+        vmin = np.nanpercentile(image, minPer).round(2) 
+        vmax = np.nanpercentile(image, maxPer).round(2)
+        image[image>=vmax] = vmax
+        image[image<=vmin] = vmin
+
+        image = image-vmin #*should make lowest Val 0
+        image = 255*(image/(vmax-vmin)) #*should make the range (0,255), like an 8-bit image
+        image = np.where(np.isfinite(image), image, 0) #*turns any nans into 0s, to keep image finite everywhere
+
+        self.image = image
+
+        #*Check to make sure the image was made when a line could be seen. 
+        fig,  ax = plt.subplots()
+        ax.imshow(image, origin="lower", cmap="grey")
+        if self.savename is not None:
+            fig.savefig(f"{self.savename}sat_image.png")
+        else:
+            fig.savefig(f"./sat_image_{maxPer}_{minPer}.png")
+
     
     def _set_threshold(self,sigma):
         mean, med, std = sigma_clipped_stats(self.image)
-        self.threshold = mean + sigma*std
+        self.threshold = mean + sigma*std  #! This can easily be > max of image
+        #! with default sat_sigma = 10, a std of ~20 can blow past the 255 upper bound with a modest mean around 50.
+        #! If std is >25, it is going to zero the gray image out. 
+        #! (ble) 
+        #* Have changed default sat_sigma to 3.0, and added it as a optional input to starkiller as well 
 
     def _detected(self):
         if len(self.streak_coef) > 0:
@@ -67,7 +136,7 @@ class sat_killer():
         dilated = cv2.dilate(arr, kernel, iterations=1)
         dilated[dilated<10]  = 0
         # set all non-zero values in the dilated array that are not connected to other non-zero values to zero
-        arr[(arr != 0) & (dilated == 0)] = 0
+        arr[(arr != 0) & (dilated == 0)] = 0 #? This is never used? (ble)
 
         d = (dilated > 0) * 1
         self.gray = (d*255/np.max(d)).astype('uint8')
@@ -195,7 +264,7 @@ class sat_killer():
                 if not used[i]:
                     diff = abs(angle[i] - angle)
                     distdiff = np.sqrt((yy[i]-yy)**2 + (xx,))
-                    ind = (diff < angle_close) & (ydiff < dist_close)
+                    ind = (diff < angle_close) & (distdiff < dist_close)
                     n_coefs += [np.nanmean(new_coefs[ind],axis=0)]
                     used[ind] = 1
             n_coefs = np.array(n_coefs)
@@ -205,13 +274,29 @@ class sat_killer():
             self._find_center()
 
     def __lc_variation_test(self,variation_frac=0.2):
+        """
+        Checks for variation along the streak, and requires it to be lower than a bound (variation_frac) (rri/ble)
+
+        Parameters
+        ----------
+            variation_frac: float, optional
+                The maximum allowed variation along a candiate streak. Should be 0<variation_frac<1, default 0.2
+
+        Returns
+        -------
+            Nothing, but changes self.streak_coef based on the results of the check  
+        """
+        
         good = []
         for c in self.streak_coef:
             xx = np.arange(0,self.image.shape[1],1)
             yy = xx*c[0] + c[1]
             yy = (yy+0.5).astype(int)
             ind = (yy > 0) & (yy < self.image.shape[0])
-            lc = self.image[yy[ind],xx[ind]]
+            lc = self.image[yy[ind],xx[ind]] #! if image angled, the streak can be to short, and therefore the median is low, but a largeish fraction is still streak (ble) 
+
+            lc = lc[np.where(lc!=2)]  #*This should fix the above, as 2 is never (well, it shouldn't be) anywhere in frame (ble)
+
             mean, med, std = sigma_clipped_stats(lc)
             if std == 0:
                 std = 1
@@ -219,6 +304,7 @@ class sat_killer():
                 std = 30
             var = abs(lc - med)
             frac = np.sum(var >= 3*std) / len(lc)
+            # print(f"frac is {frac}")  
             if frac < variation_frac:
                 good += [True]
             else:
@@ -226,6 +312,20 @@ class sat_killer():
         self.streak_coef = self.streak_coef[good]
 
     def __lc_stars_vetting(self,sigma=2):
+        """
+        Checks for strings of stars. The streaks median value must be more than the image median plus sigma* the image std. (rri/ble)
+
+            Parameters
+            ----------
+
+            sigma: float, optional
+                The number of standard deviations above the median the streak should satisfy. Default 2. 
+
+            Returns
+            -------
+                Nothing, but modifies self.streak_coef
+        """
+        
         good = []
         for c in self.streak_coef:
             xx = np.arange(0,self.image.shape[1],1)
@@ -233,7 +333,7 @@ class sat_killer():
             yy = (yy+0.5).astype(int)
             ind = (yy > 0) & (yy < self.image.shape[0])
             lc = self.image[yy[ind],xx[ind]]
-            
+            lc = lc[np.where(lc!=2)] #* Same as in __lc_varitaion_test()  (ble)
             mean, med, std = sigma_clipped_stats(lc)
             pmean, pmed, pstd = sigma_clipped_stats(self.image,maxiters=20)
             cond = med > pmed + sigma*pstd
@@ -258,9 +358,11 @@ class sat_killer():
             plt.plot(xx,yy,f'C{counter}--',label=f'Sat {counter}')
             counter += 1
         plt.legend()
-        plt.ylim(-0.5,self.image.shape[1]+0.5)
+        plt.ylim(-0.5,self.image.shape[0]+0.5) #*y is 0 in shape (ble)
         
     def _find_center(self):
+        """Finds the centers of the detected streaks (rri/ble)"""
+        
         centers = []
         lengths = []
         angles = []
@@ -268,7 +370,7 @@ class sat_killer():
         for c in self.streak_coef:
             xx = np.arange(0,self.image.shape[1],0.5)
             yy = xx*c[0] + c[1]
-            ind = (yy > 0) & (yy < self.image.shape[0])
+            ind = (yy >= 0) & (yy <= self.image.shape[0]) #*ble added = to inequality, so lines on edges were detected. They should get droped later. 
             yy = yy[ind]; xx = xx[ind]
             centers += [[np.nanmean(xx),np.nanmean(yy)]]
             lengths += [np.sqrt((xx[0]-xx[-1])**2 + (yy[0] - yy[-1])**2)]
@@ -277,7 +379,7 @@ class sat_killer():
         self.centers = np.array(centers)
         self.lengths = np.array(lengths)
         self.angles = np.array(angles)
-        self.cut_dims = (np.array(cut_dims) * 1.5).astype(int)
+        self.cut_dims = (np.array(cut_dims) * 1.5).astype(int) #! divide by 2, multiply by 1.5??? (ble)
         
         satcat = pd.DataFrame([])
         satcat['xint'] = self.centers[:,0].astype(int)
@@ -319,8 +421,14 @@ class sat_killer():
         self.sat_psfs = []
         for i in range(self.sat_num):
             if 'gaussian' in self.star_psf.psf_profile:
-                self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
-                                           length = self.lengths[i],stddev=self.star_psf.stddev)]
+
+                #TODO create first, then fit before adding to list. 
+
+                thisPsf= create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],length = self.lengths[i],stddev=self.star_psf.stddev) #! another multiply by 2 of cutdims. Now we are at 1.5 times the original lenght??? (ble)
+                
+                # thisPsf.fit_psf(np.nanmedian(self.cube, axis=0))
+
+                self.sat_psfs += [thisPsf]
             elif 'moffat' in self.star_psf.psf_profile:
                 self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
                                            length = self.lengths[i],alpha=self.star_psf.alpha,beta=self.star_psf.beta)]
@@ -332,8 +440,9 @@ class sat_killer():
         self.satcat['x'] = 0; self.satcat['y'] = 0
         self.satcat['xoff'] = 0; self.satcat['yoff'] = 0;
         for i in range(self.sat_num):
-            cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0]
+            cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0] #! still at 3/4 lenght 
             psf = self.sat_psfs[i]
+            psf.fit_psf(np.nanmedian(cut, axis=0))
             psf.fit_pos(np.nanmean(cut,axis=0),range=5)
             xoff = psf.source_x; yoff = psf.source_y
 
@@ -390,12 +499,41 @@ class sat_killer():
             self.plot_spatial_specs()
 
 
+    def streak_in_image_dims(self, reqLenIn:int=10):
+        """
+        Checks to see if the streak in inside the the image dimensions (ble)
+
+        Parameters
+        ----------
+            reqLenIn: int, optional
+                The number of points of the streak inside the image, default 10. Its a magic number 
+        """
+        oldCoefs = self.streak_coef
+        toDrop = []
+        if len(oldCoefs)>0:
+            for i, coef in enumerate(oldCoefs):
+                shape = self.image.shape #! Had shapes the wrong way around. 1 is x, 0 is y. 
+                xs = np.linspace(0,shape[1],4*shape[0])
+                ys = coef[0]*xs +coef[1]
+                
+                inFrame = ys[np.nonzero((ys>=0) & (ys<=shape[0]))] #making sure that the line detected is actually in the image
+                if len(inFrame)<reqLenIn: 
+                    #TODO remove steak
+                    toDrop.append(i)
+                    print(f"Should remove {coef} as it isn't in the frame\n")
+        
+        newCoefs = np.delete(oldCoefs, toDrop, axis=0)
+        self.streak_coef = newCoefs
+
+
+
     def scan_for_parallel_streaks(self, interestWidth:int,peakWidth:int = 1, plotting:bool=False, diagnosing:bool= False, saving:bool=False):
-        """Rotates and Scans horizontally for streaks (ble61)
-        Inputs:
-        -------
+        """Rotates and Scans horizontally for streaks (ble)
+        
+        Parameters
+        ----------
             interestWidth: int, required
-                The search width around a Hough transform found peak to scan for other peaks. 
+            The search width around a Hough transform found peak to scan for other peaks. 
 
             peakWidth: int, optional
                 The FWHM of the assumed Gaussian streaks. It is to be used to check the distance between peaks.
@@ -409,12 +547,23 @@ class sat_killer():
             
             saving: bool optional
                 If the figures should be saved
+        
+        Returns
+        -------
+            Nothing, but changes self.streak_coef
         """
-        print(f"Scanning file {self.savename}")
+
         oldStreakCoefs = self.streak_coef
         xLen = self.image.shape[1]
-
+        if len(oldStreakCoefs) == 0:
+            #don't need to scan if there is nothing there.
+            return
+        
+        print(f"Scanning file {self.savename}")
         print(f"Old streak coefiecents are: \n     {oldStreakCoefs}")
+
+       
+
         newStreakCoefs = []
         
         for sNum,streak_coef in enumerate(oldStreakCoefs):
@@ -426,7 +575,7 @@ class sat_killer():
             #rotate image
             rotIm = ndimage.rotate(self.image, np.degrees(theta), cval=np.nan)
             rotIm = rotIm.astype(np.float64)
-            rotIm[rotIm==0] = np.nan
+            rotIm[rotIm<=2] = np.nan
             
             #Project found streak to rotated axis
             offset = np.sin(theta)*xLen
@@ -436,8 +585,11 @@ class sat_killer():
             cPrime = int(round(c *np.cos(theta) +offset,0))
             
             #Scanning along rows
-            medVals = np.nanmedian(rotIm, axis=1)
-            
+            medVals = np.nanmedian(np.where(rotIm>2, rotIm, np.nan), axis=1) #* now only taking values in field (2 is off-sky black in quicklooks.)
+
+
+
+            sigVals = np.nanstd(rotIm, axis=1)
             #Stats for whole axis
             mean, med, sig = sigma_clipped_stats(medVals)
         
@@ -453,12 +605,52 @@ class sat_killer():
                 maxVal = len(medVals)-1
 
             #only looking close to streak
-            ofInterest = medVals[minVal:maxVal]
+            medOfInterest = medVals[minVal:maxVal]
+            sigOfInterest = sigVals[minVal:maxVal]
 
             #* uses peakWidth as FWHM of peaks 
-            pPrime , _ = find_peaks(ofInterest, height=mean + 5*sig, distance=peakWidth) 
-    
+            pPrime , _ = find_peaks(medOfInterest, height=mean + 5*sig, distance=peakWidth) 
+
+            minMed = np.nanmin(medOfInterest)
+            sideshift = 10 #*Magic number
+            oiLen = len(medOfInterest)
+            toDrop = []
+            # print("any to drop?")
+            for i, p in enumerate(pPrime):  #! can go wrong, if Image is angled, and streak close to corner. Cause the med value of the nearby row will be at min, due to >1/2 of px being not part of the frame.  
+            #* Sort of fixed with sig vals
+            #! but lc variation drops them still. 
+            #* Have now fixed the lc variation. A higher Variation fraction allow more satellites through (also more junk, but there was always going to have to be validation by eye)
+                lowShift = p-sideshift
+                highShift = p+sideshift
+                if lowShift<0 or highShift >=oiLen:
+                    # print(f"Should drop {p} at {i}, out of range")
+                    toDrop.append(i) #as outside of the image 
+                    continue
+                
+                downMed = medOfInterest[p-sideshift]
+                downSig = round(sigOfInterest[p-sideshift],0)
+
+                upMed = medOfInterest[p+sideshift]
+                upSig = round(sigOfInterest[p+sideshift])
+
+                if np.isfinite(upMed) and np.isfinite(downMed):
+                    #* This does still need doing, as strips can be wide enough
+                    downMed = int(medOfInterest[p-sideshift])
+                    downSig = int(round(sigOfInterest[p-sideshift],0))
+
+                    upMed = int(medOfInterest[p+sideshift])
+                    upSig = int(round(sigOfInterest[p+sideshift]))
+
+                    if (downMed ==minMed and downSig == 0) or (upMed==minMed and upSig==0):
+                        # print(f"Should drop {p} at {i}, too small")
+                        toDrop.append(i)
+                else:
+                    toDrop.append(i)
+
+            pPrime = np.delete(np.array(pPrime), toDrop)
+
             pPrime += minVal #gets into correct 0 for coords
+
 
             newIntercepts = ((pPrime-offset) / np.cos(theta))
             print(f"Streak {streak_coef} rotation and scan complete. \nFound {newIntercepts} as new Intercepts for the gradient {m}")
@@ -475,14 +667,14 @@ class sat_killer():
                 ax3.plot(medVals)
                 # ax2.set(xlim=(cPrime-60,cPrime +60))
                 ax3.axhline(mean + 5*sig, label=f"Detection lower limit, $\mu + 5\sigma$", ls=":", c="r")
-                ax3.vlines(np.round(oldStreakCoefs[:,1] *np.cos(theta) +offset,0).astype(int),0,np.max(medVals)+10, label="Detected Satellites", colors="k")
+                ax3.vlines(np.round(oldStreakCoefs[:,1] *np.cos(theta) +offset,0).astype(int),0,np.nanmax(medVals)+10, label="Detected Satellites", colors="k")
                 # ax3.vlines(pPrime,0,255)
                 ax3.set(xlabel="Row", ylabel ="Median Intensity")
                 ax3.legend()
 
                 fig4, ax4 = plt.subplots(figsize=(12,6))
-                ax4.plot(np.arange(len(ofInterest))-cPrime+minVal, ofInterest)
-                ax4.vlines([pPrime-cPrime], 0,np.max(ofInterest)+10, colors="g", label="Found Peaks")
+                ax4.plot(np.arange(len(medOfInterest))-cPrime+minVal, medOfInterest)
+                ax4.vlines([pPrime-cPrime], 0,np.nanmax(medOfInterest)+10, colors="g", label="Found Peaks")
                 ax4.axvline(0, c="k", label="Hough Transfrom Detection")
                 ax4.set(xlabel="Rows From Detection", ylabel ="Median Intensity")
                 ax4.legend()
@@ -494,14 +686,17 @@ class sat_killer():
                     fig4.savefig(f"{self.savename}_MedPeakFound{sNum}.png")
 
         newStreakCoefs = np.array(newStreakCoefs)
-        duplicates = []
-        #* This gets some of the double ups from lines being not joined properly. 
-        for i, c in enumerate(newStreakCoefs[:,1]):
-            for j, c2 in enumerate(newStreakCoefs[:,1]):
-                if np.abs(c-c2) < peakWidth and i>j:
-                    duplicates.append(i) 
 
-        newStreakCoefs = np.delete(newStreakCoefs, duplicates, axis=0) #removes doubleups
+
+        if len(newStreakCoefs.shape) >1: #So single streaks aren't indexed wrong.
+            duplicates = []
+            #* This gets some of the double ups from lines being not joined properly. 
+            for i, c in enumerate(newStreakCoefs[:,1]):
+                for j, c2 in enumerate(newStreakCoefs[:,1]):
+                    if np.abs(c-c2) < peakWidth and i>j:
+                        duplicates.append(i) 
+
+            newStreakCoefs = np.delete(newStreakCoefs, duplicates, axis=0) #removes doubleups
 
         if plotting:
             fig, ax = plt.subplots(figsize=(10,10))
@@ -533,23 +728,42 @@ class sat_killer():
 
         print(f"\n The New Streak Coefs are \n {newStreakCoefs}\n")
         self.streak_coef = newStreakCoefs #* set class variable to what was found inside method, as is standard here
-        if len(newStreakCoefs) > 0:  
+        
+        self.streak_in_image_dims()
+
+        if len(self.streak_coef) > 0:  
             #This was at the end of matchlines, when new coeffs were found, so doing it again here for consistency.
             #TODO Check if it needs to be done again.
             self._find_center() 
 
 
-    def __detection_funcs(self,threshold):
+    def __detection_funcs(self,threshold:float):
+        """
+        Calls the functions needed for satellite detection in order. The image thershold is set, then the image is dilated to this threshold. Edges and lines are detected with Canny detection and a Hough transform. These lines are then matched if there are multiple of them. If there have been streaks detected, the image is scanned for parallel streaks that have been grouped together as one, and these streaks are then validated for low variation and stellar strings. Streaks that survive these checks are then plotted onto the image. (rri/ble)
+        
+        Parameters
+        ----------
+            threshold: float, required 
+                This value is used as the number of standard deviations (sigma) that is added to the mean of the image. This sum is then set as self.threshold 
+        
+        Returns
+        -------
+            Nothing, but sets many self. variable as it goes, importantly self.streak_coef (2,n ndarray[Floats]) and self.satellite (bool)
+        """
+        
         self._set_threshold(threshold)
         self._dilate()
         self._edges()
         self._lines()
         if len(self.lines) > 1:
-            self._match_lines(close=5,minlines=0)
+            self._match_lines(close=5,minlines=0)            
             self._match_lines(close=60,minlines=1)
-            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5)
-            self.__lc_variation_test()
-            self.__lc_stars_vetting()
+        if len(self.streak_coef) > 0:           
+            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False)            
+            self.__lc_variation_test(variation_frac=0.3) #* trial with higher frac was sucessful
+            #* now consistent. No extra _tpl combined quicklooks without the same streak in a _pst single cube one
+            self.__lc_stars_vetting()  #! would throw out sats 
+             #*Had to change this to
             if len(self.streak_coef) > 0:
                 self.make_mask()
                 self.plot_lines()
@@ -559,7 +773,25 @@ class sat_killer():
 
 
 
-    def quick_detection(self,image,threshold=3,savename=None):
+    def quick_detection(self,image,threshold:float=3,savename:str|None=None):
+        """
+        Runs the satellite detection on just an image, without needing a full datacube. If no satellites are detected, it runs again at a higher threshold (rri)
+
+        Parameters
+        ----------
+            image: Arraylike, required
+                The image that is potentially contaminated with satellite streaks
+            
+            threshold: float, optional
+                This value is used as the number of standard deviations (sigma) that is added to the mean of the image. This sum is then set as self.threshold. Default is 3 
+            
+            savename str | None, optional
+                The path/to/file/name to save any plots made during the run. Default is None, needs to be given if saving figures is desired.
+        
+        Returns
+        -------
+            Nothing
+        """
         self.image = image
         self.savename = savename
         self.__detection_funcs(threshold)
@@ -601,7 +833,8 @@ class sat_killer():
     def save_specs(self,savepath='.',spatial=False):
         for i in range(len(self.sat_fluxes)):
             save = np.array([self.wavelength,self.sat_fluxes[i]]).T
-            np.save(savepath + f'sat_{i+1}.png',save)
+            # np.save(savepath + f'sat_{i+1}.png',save) #* Doesn't need the .png on the end
+            np.save(savepath + f'sat_{i+1}',save) 
 
 
 

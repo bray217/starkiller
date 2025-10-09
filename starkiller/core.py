@@ -68,7 +68,7 @@ class starkiller():
 				 psf_profile='gaussian',wcs_correction=True,psf_align=True,
 				 psf_preference='data',plot=True,run=True,verbose=True,numcores=5,rerun_cal=False,
 				 calc_psf_only=False,flux_correction=True,wavelength_sol='air',
-				 show_specs=False,fuzzy=False,background=False,satellite=False,kill_stars=True,force_flux_correction=False):
+				 show_specs=False,fuzzy=False,background=False,satellite=False,sat_sigma:float=3.0,kill_stars=True,force_flux_correction=False):
 		"""
 		Deploys the starkiller! Applying starkiller to an IFU data cube will determine the specral types of all sources, model the scene, and subtract the scene from the data.
 
@@ -124,6 +124,8 @@ class starkiller():
 			Option to turn off the background subtraction step. If False the background is set to 0
 		satellite : boolean
 			Option to search for and model satellite streaks in the data
+		sat_sigma : float
+			Optional value to set as the threshold for satellite detection. Default is 3.0
 		force_flux_correction : boolean
 			Option to use the flux correction even if just only 1 source is available
 
@@ -161,6 +163,7 @@ class starkiller():
 		self._fuzzy_field = fuzzy
 		self._force_flux_correction = force_flux_correction
 		self._search_satellite = satellite
+		self._sat_sigma = sat_sigma
 		self._psf_align = psf_align
 		self.__download_cat = get_catalog
 		self._background = background
@@ -780,6 +783,10 @@ class starkiller():
 		ii = dy[iy,ix] > self.trail*1.2
 		dx[iy[ii],ix[ii]] = 1e3
 		dy[iy[ii],ix[ii]] = 1e3
+
+		#* Would get to here before the empty cat would actually error at the nanmin
+		# print(f"Before Error:\n dy={dy}, dx={dx},\n iy={iy}, ix={ix}, ii={ii},\n ind={ind}, dmags={dmags}, ang={ang} \n yyy={yyy}, xxx={xxx},\n yy={yy}, xx={xx}\n cat={self.cat}")
+
 		if self.trail > 1:
 			isoind = (np.nanmin(dy,axis=0) > self.trail*1.2) & (mags < self.cal_maglim)
 		else:
@@ -1298,7 +1305,7 @@ class starkiller():
 		if self._search_satellite:
 			if self.verbose:
 				print('Checking for satellites')
-			self.satellite = sat_killer(self.cube,self.psf,num_cores=self.numcores,wavelength=self.lam)
+			self.satellite = sat_killer(self.cube,self.psf,num_cores=self.numcores,wavelength=self.lam, sat_sigma = self._sat_sigma, savename=self.savepath)
 			if self.plot:
 				self.satellite.plot_lines()
 			if self.satellite.sat_num == 0:
@@ -1359,14 +1366,16 @@ class starkiller():
 		else:
 			scene = cube_simulator(self.cube,psf=self.psf,catalog=self.cat,datapsf=data)
 		flux = []
-		for i in range(len(self.cat)):
-			#f = downsample_spec(self.models[i],self.lam)
-			f = self.models[i].sample(self.lam)
-			flux += [f*1e20 / self.flux_corr]
-		flux = np.array(flux)
-		scene.make_scene(flux)
-		self.scene = scene
+		if self._kill_stars:
+			for i in range(len(self.cat)):
+				#f = downsample_spec(self.models[i],self.lam)
+				f = self.models[i].sample(self.lam)
+				flux += [f*1e20 / self.flux_corr]
 
+		flux = np.array(flux)
+		scene.make_scene(flux, kill_stars = self._kill_stars)
+		self.scene = scene
+ 
 	def calc_difference(self):
 		"""
 		Calculate the difference between the scene and the cube. Adds in the diff variable.
@@ -1389,8 +1398,13 @@ class starkiller():
 		vmin = np.nanpercentile(image,16)
 		vmax = np.nanpercentile(image,95)
 
-		x = self.cat.xint + self.cat.x_offset
-		y = self.cat.yint + self.cat.y_offset
+		if self._kill_stars:
+			x = self.cat.xint + self.cat.x_offset
+			y = self.cat.yint + self.cat.y_offset
+		else:
+			#! plotting (NaN,NaN) should not error, but also not plot anything. 
+			x=np.nan
+			y=np.nan
 
 		plt.figure(figsize=(12,4))
 		plt.subplot(131)
@@ -1519,13 +1533,22 @@ class starkiller():
 
 
 	def make_template_psf(self,alpha=2,beta=2,stddev=2,length=1,angle=0):
+		
+		#set to ints because they are not set earlier #! magic numbers that are reset later
+		self.x_length = 10
+		self.y_length = 10
+
 		if 'moffat' in self.psf_profile:
 			self.psf = create_psf(x=self.x_length*2+1,y=self.y_length*2+1,alpha=alpha,
 					  			  beta=beta,length=length,angle=angle,
 					  			  psf_profile=self.psf_profile)
+			self.psf_param = np.array([alpha,beta,length,angle])
+
 		elif 'gaussian' in self.psf_profile:
 			self.psf = create_psf(x=self.x_length*2+1,y=self.y_length*2+1,stddev=stddev,length=length,angle=angle,
 					  			  psf_profile=self.psf_profile)
+			self.psf_param = np.array([stddev,length,angle])
+			
 		self.psf.generate_line_psf()
 
 
