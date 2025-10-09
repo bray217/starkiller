@@ -13,7 +13,7 @@ from scipy.signal import find_peaks
 
 
 class sat_killer():
-    def __init__(self,cube,psf,wavelength=None,sat_thickness=17,sat_sigma=10,
+    def __init__(self,cube,psf,wavelength=None,sat_thickness=17,sat_sigma=3.0,
                  savename=None,y_close=5,angle_close=2,dist_close=10,num_cores=5,run=True):
         self.cube = cube
         self.star_psf = psf
@@ -26,15 +26,39 @@ class sat_killer():
         self.streak_coef = []
 
         if run:
-            self._make_image()
-            #* (ble) Looks like these are also done in __detection_funcs()
-            self._set_threshold(sat_sigma)
-            self._dilate()
-            self._edges()
-            self._lines()
-            #* ^ 
+            
+            
+            #* different bounds to iterate over 
 
+            #! should really only do this if there is a known satellite
+            #* the scaling wasn't the issue. 
+            # mins = [1,2,5,10,16]
+            # maxs = [99,98,95,90,84] 
+            # for minP in mins:  
+            #     if len(self.streak_coef) > 0:
+            #             break #if it is here, a streak has been detected.   
+            #     for maxP in maxs:
+            #         self._make_image(minPer=minP, maxPer=maxP)
+            #         self.__detection_funcs(sat_sigma)
+            #         if len(self.streak_coef) > 0:
+            #             print(f"The minP is {minP} and the maxP is {maxP}")
+            #             break #if it is here, a streak has been detected. 
+            #         else:
+            #             print(f"This min/max pair did not work ({minP}, {maxP})")
+
+
+            minP=1
+            maxP=98
+
+            self._make_image(minPer=minP, maxPer=maxP)
+                                    # #* (ble) Looks like these are also done in __detection_funcs()
+                                    # self._set_threshold(sat_sigma)
+                                    # self._dilate()
+                                    # self._edges()
+                                    # self._lines()
+                                    # #* ^ 
             self.__detection_funcs(sat_sigma)
+
             if len(self.streak_coef) > 0:
                 self.make_mask()
                 self._detected()
@@ -43,7 +67,20 @@ class sat_killer():
                     #? self.fitpsf() should be here??
                     self._fit_spec()
 
-    def _make_image(self):
+    def _make_image(self, minPer:float=2.0,maxPer:float=98.0):
+        """
+        Makes a 'quicklook like' image
+
+        Parameters
+        ----------
+
+            minPer: float, optional
+                The lower bound percentile cutoff. Default is 2.0
+
+            maxPer
+                The upper bound percentile cutoff. Default is 98.0
+        """
+        
         #* how rri did it, which was struggling to catch streaks
         # image = np.nanmedian(self.cube,axis=0)
         # self.image = image - np.nanmedian(image)
@@ -52,8 +89,8 @@ class sat_killer():
         image = np.nanmedian(self.cube, axis = 0)
 
         #*Sets `quicklook-like` bounds, and applies them to the image
-        vmin = np.nanpercentile(image, 16).round(2) 
-        vmax = np.nanpercentile(image, 92).round(2)
+        vmin = np.nanpercentile(image, minPer).round(2) 
+        vmax = np.nanpercentile(image, maxPer).round(2)
         image[image>=vmax] = vmax
         image[image<=vmin] = vmin
 
@@ -69,7 +106,7 @@ class sat_killer():
         if self.savename is not None:
             fig.savefig(f"{self.savename}sat_image.png")
         else:
-            fig.savefig("./sat_image.png")
+            fig.savefig(f"./sat_image_{maxPer}_{minPer}.png")
 
     
     def _set_threshold(self,sigma):
@@ -77,7 +114,8 @@ class sat_killer():
         self.threshold = mean + sigma*std  #! This can easily be > max of image
         #! with default sat_sigma = 10, a std of ~20 can blow past the 255 upper bound with a modest mean around 50.
         #! If std is >25, it is going to zero the gray image out. 
-        #! (ble)   
+        #! (ble) 
+        #* Have changed default sat_sigma to 3.0, and added it as a optional input to starkiller as well 
 
     def _detected(self):
         if len(self.streak_coef) > 0:

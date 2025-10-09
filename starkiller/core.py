@@ -66,7 +66,7 @@ class starkiller():
 				 psf_profile='gaussian',wcs_correction=True,psf_align=True,
 				 psf_preference='data',plot=True,run=True,verbose=True,numcores=5,rerun_cal=False,
 				 calc_psf_only=False,flux_correction=True,wavelength_sol='air',
-				 show_specs=False,fuzzy=False,background=False,satellite=False,kill_stars=True,force_flux_correction=False):
+				 show_specs=False,fuzzy=False,background=False,satellite=False,sat_sigma:float=3.0,kill_stars=True,force_flux_correction=False):
 		"""
 		Deploys the starkiller! Applying starkiller to an IFU data cube will determine the specral types of all sources, model the scene, and subtract the scene from the data.
 
@@ -122,6 +122,8 @@ class starkiller():
 			Option to turn off the background subtraction step. If False the background is set to 0
 		satellite : boolean
 			Option to search for and model satellite streaks in the data
+		sat_sigma : float
+			Optional value to set as the threshold for satellite detection. Default is 3.0
 		force_flux_correction : boolean
 			Option to use the flux correction even if just only 1 source is available
 
@@ -159,6 +161,7 @@ class starkiller():
 		self._fuzzy_field = fuzzy
 		self._force_flux_correction = force_flux_correction
 		self._search_satellite = satellite
+		self._sat_sigma = sat_sigma
 		self._psf_align = psf_align
 		self.__download_cat = get_catalog
 		self._background = background
@@ -1300,7 +1303,7 @@ class starkiller():
 		if self._search_satellite:
 			if self.verbose:
 				print('Checking for satellites')
-			self.satellite = sat_killer(self.cube,self.psf,num_cores=self.numcores,wavelength=self.lam)
+			self.satellite = sat_killer(self.cube,self.psf,num_cores=self.numcores,wavelength=self.lam, sat_sigma = self._sat_sigma, savename=self.savepath)
 			if self.plot:
 				self.satellite.plot_lines()
 			if self.satellite.sat_num == 0:
