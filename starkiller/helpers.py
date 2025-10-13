@@ -1697,8 +1697,21 @@ def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=F
     satIm = _make_unscaled_image(cube)
     diffIm = _make_unscaled_image(diffCube)
 
-    #turns seed into mask
-    satMask = _seed_to_mask(seed)
+    
+    
+    #turns seed into mask, lower bound was not low enough sometimes. 
+    count = 0 
+    while count <= 6: #if 1e-10 doesn't work, something else is wrong
+        
+        lb = 10**(-( 4 + count)) #  dynamic mask range
+        satMask = _seed_to_mask(seed, lowerBound=lb)
+
+        if np.sum(satMask) == 0: #all are False. 
+            count +=1
+        else:
+            count = 10
+
+
 
     means, meds, stds, plusMask, minusMask = _frame_stats(satIm, satMask, slope, shift, returnOffsetMasks=True) #runs on image
 
