@@ -102,7 +102,7 @@ class sat_killer():
 
         #*Check to make sure the image was made when a line could be seen. 
         fig,  ax = plt.subplots()
-        ax.imshow(image, origin="lower", cmap="grey")
+        ax.imshow(image, origin="lower", cmap="gray")
         if self.savename is not None:
             fig.savefig(f"{self.savename}sat_image.png")
         else:
