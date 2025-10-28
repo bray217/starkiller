@@ -442,7 +442,7 @@ class sat_killer():
         for i in range(self.sat_num):
             cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0] #! still at 3/4 lenght 
             psf = self.sat_psfs[i]
-            psf.fit_psf(np.nanmedian(cut, axis=0))
+            psf.fit_psf(np.nanmedian(cut, axis=0), limx=2, limy=2)
             psf.fit_pos(np.nanmean(cut,axis=0),range=5)
             xoff = psf.source_x; yoff = psf.source_y
 
@@ -609,7 +609,8 @@ class sat_killer():
             sigOfInterest = sigVals[minVal:maxVal]
 
             #* uses peakWidth as FWHM of peaks 
-            pPrime , _ = find_peaks(medOfInterest, height=mean + 5*sig, distance=peakWidth) 
+            # pPrime , _ = find_peaks(medOfInterest, height=mean + 5*sig, distance=peakWidth) 
+            pPrime , _ = find_peaks(medOfInterest, height=mean + 4*sig, distance=peakWidth) 
 
             minMed = np.nanmin(medOfInterest)
             sideshift = 10 #*Magic number
@@ -666,7 +667,8 @@ class sat_killer():
                 fig3, ax3 = plt.subplots(figsize=(12,6))
                 ax3.plot(medVals)
                 # ax2.set(xlim=(cPrime-60,cPrime +60))
-                ax3.axhline(mean + 5*sig, label=f"Detection lower limit, $\mu + 5\sigma$", ls=":", c="r")
+                # ax3.axhline(mean + 5*sig, label=f"Detection lower limit, $\mu + 5\sigma$", ls=":", c="r")
+                ax3.axhline(mean + 4*sig, label=f"Detection lower limit, $\mu + 4\sigma$", ls=":", c="r")
                 ax3.vlines(np.round(oldStreakCoefs[:,1] *np.cos(theta) +offset,0).astype(int),0,np.nanmax(medVals)+10, label="Detected Satellites", colors="k")
                 # ax3.vlines(pPrime,0,255)
                 ax3.set(xlabel="Row", ylabel ="Median Intensity")
@@ -759,11 +761,15 @@ class sat_killer():
             self._match_lines(close=5,minlines=0)            
             self._match_lines(close=60,minlines=1)
         if len(self.streak_coef) > 0:           
-            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False)            
+            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False, saving=False)  
+            # print(f"after scan {self.streak_coef}")          
             self.__lc_variation_test(variation_frac=0.3) #* trial with higher frac was sucessful
             #* now consistent. No extra _tpl combined quicklooks without the same streak in a _pst single cube one
+            # print(f"after variation{self.streak_coef}") 
             self.__lc_stars_vetting()  #! would throw out sats 
-             #*Had to change this to
+            # #*Had to change this too
+            # print(f"after vetting {self.streak_coef}") 
+            self._find_center() #! need to go here to update satcat after the vetting
             if len(self.streak_coef) > 0:
                 self.make_mask()
                 self.plot_lines()

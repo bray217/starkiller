@@ -1513,7 +1513,7 @@ def make_false_colour_Sloan(cube, lambdas, savePath:str, saveName:str, scaleNorm
         intensities=[0.6,0.4, 0.55, 0.55],
         uppers=[99,99, 99, 99],
         lowers=[50,50, 50, 50],
-        save=False,
+        save=True,
         save_name=saveName,
         save_folder=savePath,
         gamma=1.5,
@@ -1522,11 +1522,176 @@ def make_false_colour_Sloan(cube, lambdas, savePath:str, saveName:str, scaleNorm
         star_size=5,
         epsf_plot=False,
         epsf=False,
-        manual_override=20
+        manual_override=0
     )
     colour = rgb.plot()
 
     return colour
+
+def multi_false_colour_Sloan(cube, otherCubes, lambdas, savePath:str, saveNames:list, scaleNorm:str="linear"):
+    """
+    Using AstroColour by zgl12 to false colour multiple cubes to the same scale. Using the SDSS filter cuts 
+    
+    Parameters
+    ----------
+
+        cube: starkiller.cube, required
+
+        otherCubes: list of starkiller.cubes
+
+        lambdas: starkiller.lam, required
+
+        savePath:str, required
+            The path to save the images to
+        saveNames:list, required
+            A list of names for the cube and then each of the other cubes (without a file extension). Should be len(otherCubes) +1 in length. 0th entry is the cube name, i+1 entry is name of ith cube in otherCubes 
+        scaleNorm: str, optional
+            The Norm to scale the images by, default "linear". Other options include "log", "sinh", "asinh"
+    
+    Returns
+    -------
+
+        colour: ndarray
+            the scaled slices of the cube that can then be used for reploting
+    """
+
+
+    #*SDSS bands
+    gmin = 3797.64	
+    gmax = 5553.04
+    rmin = 5418.23 
+    rmax=	6994.42
+    imin = 6692.41  
+    imax=8400.32
+    zmin = 7964.70
+
+    gIDs = np.where((lambdas>gmin) & (lambdas<gmax))
+
+    rIDs = np.where((lambdas>rmin) & (lambdas<rmax))
+
+    iIDs = np.where((lambdas>imin) & (lambdas<imax))
+
+    zIDs = np.where((lambdas>zmin))
+
+
+    gCube = cube[gIDs[0],:,:] 
+    rCube = cube[rIDs[0],:,:] 
+    iCube = cube[iIDs[0],:,:] 
+    zCube = cube[zIDs[0],:,:] 
+
+    gRange = gmax-lambdas[0] #Only get those in datacube
+    rRange = rmax-rmin
+    iRange = imax-imin
+    zRange = lambdas[-1] - zmin #only get those in datacube
+
+    gIm = np.nansum(gCube, axis=0)
+    rIm = np.nansum(rCube, axis=0)
+    iIm = np.nansum(iCube, axis=0)
+    zIm = np.nansum(zCube, axis=0)
+
+    gIm = gIm/gRange
+    rIm = rIm/rRange
+    iIm = iIm/iRange
+    zIm = zIm/zRange
+
+    gVmin = np.nanmin(gIm)
+    rVmin = np.nanmin(rIm)
+    iVmin = np.nanmin(iIm)
+    zVmin = np.nanmin(zIm)
+
+    gVmax = np.nanmax(gIm)
+    rVmax = np.nanmax(rIm)
+    iVmax = np.nanmax(iIm)
+    zVmax = np.nanmax(zIm)
+
+    gIm = (gIm-gVmin)*(255/(gVmax-gVmin))
+    rIm = (rIm-rVmin)*(255/(rVmax-rVmin))
+    iIm = (iIm-iVmin)*(255/(iVmax-iVmin))
+    zIm = (zIm-zVmin)*(255/(zVmax-zVmin))
+
+    g99 = np.nanpercentile(gIm,99)
+    r99 = np.nanpercentile(rIm,99)
+    i99 = np.nanpercentile(iIm,99)
+    z99 = np.nanpercentile(zIm,99)
+
+    imList = [zIm,iIm,rIm,gIm]
+    rgb = RGB(
+        imList,
+        colours=['red',"yellow",'green','blue'],
+        intensities=[0.6,0.4, 0.55, 0.55],
+        uppers=[99,99, 99, 99],
+        lowers=[50,50, 50, 50],
+        save=True,
+        save_name=saveNames[0],
+        save_folder=savePath,
+        gamma=1.5,
+        norm='linear',
+        min_separation=29,
+        star_size=5,
+        epsf_plot=False,
+        epsf=False,
+        manual_override=0
+    )
+    colour = rgb.plot()
+
+    for i, thisCube in enumerate(otherCubes):
+        gCube = thisCube[gIDs[0],:,:] 
+        rCube = thisCube[rIDs[0],:,:] 
+        iCube = thisCube[iIDs[0],:,:] 
+        zCube = thisCube[zIDs[0],:,:] 
+
+        gRange = gmax-lambdas[0] #Only get those in datacube
+        rRange = rmax-rmin
+        iRange = imax-imin
+        zRange = lambdas[-1] - zmin #only get those in datacube
+
+        gIm = np.nansum(gCube, axis=0)
+        rIm = np.nansum(rCube, axis=0)
+        iIm = np.nansum(iCube, axis=0)
+        zIm = np.nansum(zCube, axis=0)
+
+        gIm = gIm/gRange
+        rIm = rIm/rRange
+        iIm = iIm/iRange
+        zIm = zIm/zRange
+
+        #*new mins so goes to 0
+        gVmin = np.nanmin(gIm)
+        rVmin = np.nanmin(rIm)
+        iVmin = np.nanmin(iIm)
+        zVmin = np.nanmin(zIm)
+
+        #Scale using orig maxes to get the top end the same
+        gIm = (gIm-gVmin)*(255/(gVmax-gVmin))
+        rIm = (rIm-rVmin)*(255/(rVmax-rVmin))
+        iIm = (iIm-iVmin)*(255/(iVmax-iVmin))
+        zIm = (zIm-zVmin)*(255/(zVmax-zVmin))
+
+        gUp = np.mean(gIm<g99)*100
+        rUp = np.mean(rIm<r99)*100
+        iUp = np.mean(iIm<i99)*100
+        zUp = np.mean(zIm<z99)*100
+
+        imList = [zIm,iIm,rIm,gIm]
+        rgb = RGB(
+            imList,
+            colours=['red',"yellow",'green','blue'],
+            intensities=[0.6,0.4, 0.55, 0.55],
+            uppers=[zUp,iUp, rUp, gUp],
+            lowers=[50,50, 50, 50],
+            save=True,
+            save_name=saveNames[i+1],
+            save_folder=savePath,
+            gamma=1.5,
+            norm='linear',
+            min_separation=29,
+            star_size=5,
+            epsf_plot=False,
+            epsf=False,
+            manual_override=0
+        )
+        colour = rgb.plot()
+
 
 
 #(ble) Adding backgroud stats functions

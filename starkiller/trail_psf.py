@@ -315,24 +315,24 @@ class create_psf():
             self.angle = coeff[3]
             self.source_x = coeff[4]
             self.source_y = coeff[5]
-            #floor = coeff[6]
+            floor = coeff[6]
         elif 'gaussian' in self.psf_profile:
             self.stddev = coeff[0]
             self.length = coeff[1]
             self.angle = coeff[2]
             self.source_x = coeff[3]
             self.source_y = coeff[4]
-            #floor = coeff[5]
+            floor = coeff[5]
         self.generate_line_psf(shiftx = self.source_x, shifty = self.source_y)
         psf = self.longpsf / np.nansum(self.longpsf) # type: ignore
         
-        diff = abs(image - psf)
+        diff = abs(image - (psf + floor)) #// *add floor
         residual = np.nansum(diff)
         #self.residual = residual
         return np.exp(residual)
 
 
-    def fit_psf(self,image,limx=10,limy=10):
+    def fit_psf(self,image,limx=10,limy=10):  #TODO add stars T/F param
         """
         Fit a PSF profile to the input image.
 
@@ -349,16 +349,17 @@ class create_psf():
 
         image -= np.nanmedian(image)
         normimage = image / np.nansum(image)
-        anglebs = [self.angle_o*0.6,self.angle_o*1.4]
+        # anglebs = [self.angle_o*0.6,self.angle_o*1.4] #* Stars might want this
+        anglebs = [self.angle+np.radians(5), self.angle-np.radians(5)]
 
         if self.psf_profile == 'moffat':
-            coeff = [self.alpha,self.beta,self.length,self.angle,0,0]
+            coeff = [self.alpha,self.beta,self.length,self.angle,0,0, 0]
             lims = [[0.1,100],[1,100],[self.length_o*0.5,self.length_o*1.5],
-                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy]]
+                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
         elif self.psf_profile == 'gaussian':
-            coeff = [self.stddev,self.length,self.angle,0,0]
-            lims = [[0.1,20],[self.length_o*0.6,self.length_o*1.4],
-                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy]]
+            coeff = [self.stddev,self.length,self.angle,0,0,0]
+            lims = [[0.1,5],[self.length_o*0.6,self.length_o*1.4],
+                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
         else:
             m = 'Incorrect psf_profile, please select from moffat or gaussian.'
             raise ValueError(m)
