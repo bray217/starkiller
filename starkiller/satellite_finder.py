@@ -441,6 +441,19 @@ class sat_killer():
         self.satcat['xoff'] = 0; self.satcat['yoff'] = 0;
         for i in range(self.sat_num):
             cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0] #! still at 3/4 lenght 
+
+            #* ble inpainting to get a background to remove
+            imMasked = np.where(self.mask[0],np.nan,self.image)
+            from skimage.restoration import inpaint
+            imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
+            bkgRemImCube = np.array([self.image-imFixed])
+
+            fig, ax = plt.subplots()
+            ax.imshow(bkgRemImCube[0], origin="lower")
+            fig.savefig(f"{self.savename}bkgRemIm.png")
+
+            cut = cube_cutout(bkgRemImCube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0]
+
             psf = self.sat_psfs[i]
             psf.fit_psf(np.nanmedian(cut, axis=0), limx=2, limy=2)
             psf.fit_pos(np.nanmean(cut,axis=0),range=5)
