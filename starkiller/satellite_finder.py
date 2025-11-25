@@ -457,7 +457,6 @@ class sat_killer():
 
 
             #* ble inpainting to get a background to remove
-<<<<<<< HEAD
             # imMasked = np.where(self.mask[0],np.nan,self.image)
             # from skimage.restoration import inpaint
             # imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
@@ -467,12 +466,10 @@ class sat_killer():
             # fig.savefig(f"{self.savename}bkgRemIm.png")
             # cut = cube_cutout(bkgRemImCube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0]
             #! oversubtracts, or breaks everything. 
-=======
             imMasked = np.where(self.mask[0],np.nan,medIm)
             from skimage.restoration import inpaint
             imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
             bkgRemImCube = np.array([medIm-imFixed])
->>>>>>> 2657677824f057f27d40c46fb75bb3ea1749e83a
 
 
             psf = self.sat_psfs[i]
