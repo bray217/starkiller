@@ -442,7 +442,22 @@ class sat_killer():
         for i in range(self.sat_num):
             cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0] #! still at 3/4 lenght 
 
+            # medIm = np.nanmedian(self.cube, axis=0)
+
+            # vmin = np.nanpercentile(medIm, 1).round(2) 
+            # vmax = np.nanpercentile(medIm, 99).round(2)
+            # medIm[medIm>=vmax] = vmax
+            # medIm[medIm<=vmin] = vmin
+
+            # fig, ax = plt.subplots()
+            # ax.imshow(medIm, origin="lower")
+
+
+            medIm = self.image
+
+
             #* ble inpainting to get a background to remove
+<<<<<<< HEAD
             # imMasked = np.where(self.mask[0],np.nan,self.image)
             # from skimage.restoration import inpaint
             # imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
@@ -452,6 +467,12 @@ class sat_killer():
             # fig.savefig(f"{self.savename}bkgRemIm.png")
             # cut = cube_cutout(bkgRemImCube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0]
             #! oversubtracts, or breaks everything. 
+=======
+            imMasked = np.where(self.mask[0],np.nan,medIm)
+            from skimage.restoration import inpaint
+            imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
+            bkgRemImCube = np.array([medIm-imFixed])
+>>>>>>> 2657677824f057f27d40c46fb75bb3ea1749e83a
 
 
             psf = self.sat_psfs[i]
