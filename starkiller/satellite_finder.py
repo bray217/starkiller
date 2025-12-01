@@ -790,6 +790,8 @@ class sat_killer():
 
         # medVals = np.nanmedian(np.where(rotIm>2, rotIm, np.nan), axis=1)
 
+        rotIm[~np.isfinite(rotIm)]=0
+
         medVals = np.nanmedian(rotIm, axis=1)
 
         return -1* medVals[cPrime] 
