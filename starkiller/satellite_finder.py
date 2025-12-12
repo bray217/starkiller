@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy import ndimage
 from scipy.signal import find_peaks
+from scipy.optimize import curve_fit
 
 
 class sat_killer():
@@ -88,7 +89,7 @@ class sat_killer():
         #*ble, to make it more like a quicklook, which we know works for streak detection
         image = np.nanmedian(self.cube, axis = 0)
 
-        self.unaltered_image = image
+        self.unaltered_image = deepcopy(image)
 
         #*Sets `quicklook-like` bounds, and applies them to the image
         vmin = np.nanpercentile(image, minPer).round(2) 
@@ -779,8 +780,10 @@ class sat_killer():
 
         image = self.unaltered_image
         
+        image[~np.isfinite(image)]=0
+
         rotIm = ndimage.rotate(image, theta, cval=np.nan)
-        rotIm = rotIm.astype(np.float64)
+        # rotIm = rotIm.astype(np.float64)
         # rotIm[rotIm<=2] = np.nan
 
         xLen = image.shape[1]
@@ -796,7 +799,24 @@ class sat_killer():
 
         medVals = np.nanmedian(rotIm, axis=1)
 
+
+        if self.rotPlot: 
+
+            fig, ax = plt.subplots()
+            ax.plot(medVals)
+            ax.axvline(cPrime)
+
+            # fig2, ax2 = plt.subplots()
+            # ax2.imshow(rotIm, origin="lower")
+            return medVals, cPrime
+
+
         return -1* medVals[cPrime] 
+
+
+    def gaussToOpt(self, xs, mu, sigma, a, k):
+        return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k
+
 
 
     def opt_streak_params(self, degBound=2, cBound=4):
@@ -805,26 +825,49 @@ class sat_killer():
             m = self.streak_coef[i,0]
             c = self.streak_coef[i,1]
 
-            guessParams = [np.degrees(np.arctan(m))+(np.random.rand()-0.5), c+4*(np.random.rand()-0.5)] 
+
+            guessParams = [np.degrees(np.arctan(m)), c] 
+            # guessParams = [np.degrees(np.arctan(m))+(np.random.rand()-0.5), c+4*(np.random.rand()-0.5)] 
 
             print(guessParams)
 
-            res = minimize(self.rotMax, guessParams, bounds = [(guessParams[0]-degBound, guessParams[0]+degBound), (guessParams[1]-cBound, guessParams[1]+cBound)])
+            self.rotPlot = False
+
+            res = minimize(self.rotMax, guessParams, bounds = [(guessParams[0]-degBound, guessParams[0]+degBound), (guessParams[1]-cBound, guessParams[1]+cBound)], method='nelder-mead')
 
             print(res)
             print("")
             print(res.x)
 
+            self.rotPlot = True
+            medVals, cPrime = self.rotMax(res.x)
+            xVals = np.arange(medVals.shape[0])
+
+            guessGauss = [cPrime, 2, medVals[cPrime],np.nanmean(medVals[np.nonzero(medVals)])] #[mu, sigma, a, k]
+
+            print(guessGauss)
+
+            popt, pcov = curve_fit(self.gaussToOpt, xVals, medVals, p0=guessGauss) #TODO add std of each row as err vals, might help.
+
+            print(popt)
+
             fig, ax = plt.subplots()
 
-            ax.imshow(self.image, origin = "lower",cmap="gray")
+            ax.imshow(self.unaltered_image, origin = "lower",cmap="gray")
 
-            xs = np.linspace(0,self.image.shape[1], 1000)
+            xs = np.linspace(0,self.unaltered_image.shape[1], 1000)
 
             ax.plot(xs, m*xs+c, ls="--")
             ax.plot(xs, np.tan(np.radians(res.x[0]))*xs+res.x[1],ls=":")
 
             ax.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
+
+            fig2, ax2 = plt.subplots()
+            ax2.plot(medVals)
+            ax2.axvline(cPrime, ls=":",c="k")
+            ax2.plot(xVals, self.gaussToOpt(xVals, *popt))
+
+            ax2.set(xlim=(popt[0]-5*popt[1], popt[0]+5*popt[1]))
 
             kill
             #! self.streak_coef[i] = res
@@ -853,7 +896,7 @@ class sat_killer():
             self._match_lines(close=5,minlines=0)            
             self._match_lines(close=60,minlines=1)
         if len(self.streak_coef) > 0:           
-            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=True, plotting=True, saving=False)  
+            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False, saving=False)  
             
             # print(f"after scan {self.streak_coef}")          
             self.__lc_variation_test(variation_frac=0.3) #* trial with higher frac was sucessful
