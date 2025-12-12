@@ -3,6 +3,7 @@ from joblib import Parallel, delayed
 from scipy.optimize import minimize
 from starkiller.trail_psf import create_psf
 from scipy import signal
+from scipy.ndimage import shift
 
 
 class PSF_photom():

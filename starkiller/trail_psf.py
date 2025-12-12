@@ -350,7 +350,8 @@ class create_psf():
         image -= np.nanmedian(image)
         normimage = image / np.nansum(image)
         # anglebs = [self.angle_o*0.6,self.angle_o*1.4] #* Stars might want this
-        anglebs = [self.angle+np.radians(5), self.angle-np.radians(5)]
+        # anglebs = [self.angle+np.radians(5), self.angle-np.radians(5)] #! This self.angle is actually in degrees!!! So this is a very tight bound. 
+        anglebs = [self.angle+2, self.angle-2] #* slightly smaller bound than 5 degrees, but might be enough to fix angle issues. 
 
         if self.psf_profile == 'moffat':
             coeff = [self.alpha,self.beta,self.length,self.angle,0,0, 0]
@@ -358,7 +359,10 @@ class create_psf():
                     [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
         elif self.psf_profile == 'gaussian':
             coeff = [self.stddev,self.length,self.angle,0,0,0]
-            lims = [[0.1,5],[self.length_o*0.6,self.length_o*1.4],
+            # lims = [[0.1,5],[self.length_o*0.6,self.length_o*1.4],
+            #         [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
+            lims = [[1,5], #* up the min psf width.  
+                    [self.length_o*0.6,self.length_o*1.4], 
                     [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
         else:
             m = 'Incorrect psf_profile, please select from moffat or gaussian.'
