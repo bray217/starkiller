@@ -88,6 +88,8 @@ class sat_killer():
         #*ble, to make it more like a quicklook, which we know works for streak detection
         image = np.nanmedian(self.cube, axis = 0)
 
+        self.unaltered_image = image
+
         #*Sets `quicklook-like` bounds, and applies them to the image
         vmin = np.nanpercentile(image, minPer).round(2) 
         vmax = np.nanpercentile(image, maxPer).round(2)
@@ -474,7 +476,7 @@ class sat_killer():
 
             psf = self.sat_psfs[i]
             psf.fit_psf(np.nanmedian(cut, axis=0), limx=2, limy=2)
-            psf.fit_pos(np.nanmean(cut,axis=0),range=5)
+            # psf.fit_pos(np.nanmean(cut,axis=0),range=5)
             xoff = psf.source_x; yoff = psf.source_y
 
             flux,res = zip(*Parallel(n_jobs=self.num_cores)(delayed(psf.psf_flux)(image) for image in cut))
@@ -769,6 +771,65 @@ class sat_killer():
             #TODO Check if it needs to be done again.
             self._find_center() 
 
+    def rotMax(self, coef):
+
+        """coef = [theta, c], with theta in *degrees* """
+
+        theta,c = coef
+
+        image = self.unaltered_image
+        
+        rotIm = ndimage.rotate(image, theta, cval=np.nan)
+        rotIm = rotIm.astype(np.float64)
+        # rotIm[rotIm<=2] = np.nan
+
+        xLen = image.shape[1]
+        offset = np.sin(np.radians(theta))*xLen
+        if theta <0:
+            offset=0
+
+        cPrime = int(round(c *np.cos(np.radians(theta)) +offset,0)) 
+
+        # medVals = np.nanmedian(np.where(rotIm>2, rotIm, np.nan), axis=1)
+
+        rotIm[~np.isfinite(rotIm)]=0
+
+        medVals = np.nanmedian(rotIm, axis=1)
+
+        return -1* medVals[cPrime] 
+
+
+    def opt_streak_params(self, degBound=2, cBound=4):
+        for i in range(len(self.streak_coef)):
+
+            m = self.streak_coef[i,0]
+            c = self.streak_coef[i,1]
+
+            guessParams = [np.degrees(np.arctan(m))+(np.random.rand()-0.5), c+4*(np.random.rand()-0.5)] 
+
+            print(guessParams)
+
+            res = minimize(self.rotMax, guessParams, bounds = [(guessParams[0]-degBound, guessParams[0]+degBound), (guessParams[1]-cBound, guessParams[1]+cBound)])
+
+            print(res)
+            print("")
+            print(res.x)
+
+            fig, ax = plt.subplots()
+
+            ax.imshow(self.image, origin = "lower",cmap="gray")
+
+            xs = np.linspace(0,self.image.shape[1], 1000)
+
+            ax.plot(xs, m*xs+c, ls="--")
+            ax.plot(xs, np.tan(np.radians(res.x[0]))*xs+res.x[1],ls=":")
+
+            ax.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
+
+            kill
+            #! self.streak_coef[i] = res
+
+
 
     def __detection_funcs(self,threshold:float):
         """
@@ -792,7 +853,8 @@ class sat_killer():
             self._match_lines(close=5,minlines=0)            
             self._match_lines(close=60,minlines=1)
         if len(self.streak_coef) > 0:           
-            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False, saving=False)  
+            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=True, plotting=True, saving=False)  
+            
             # print(f"after scan {self.streak_coef}")          
             self.__lc_variation_test(variation_frac=0.3) #* trial with higher frac was sucessful
             #* now consistent. No extra _tpl combined quicklooks without the same streak in a _pst single cube one
@@ -802,6 +864,9 @@ class sat_killer():
             # print(f"after vetting {self.streak_coef}") 
             self._find_center() #! need to go here to update satcat after the vetting
             if len(self.streak_coef) > 0:
+                
+                self.opt_streak_params()
+                
                 self.make_mask()
                 self.plot_lines()
                 if self.savename is not None:
@@ -830,6 +895,7 @@ class sat_killer():
             Nothing
         """
         self.image = image
+        self.unaltered_image = image
         self.savename = savename
         self.__detection_funcs(threshold)
         if (threshold < 10) & (self.sat_num == 0):
