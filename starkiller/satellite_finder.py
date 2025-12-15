@@ -798,7 +798,7 @@ class sat_killer():
         rotIm[~np.isfinite(rotIm)]=0
 
         medVals = np.nanmedian(rotIm, axis=1)
-
+        
 
         if self.rotPlot: 
 
@@ -808,7 +808,8 @@ class sat_killer():
 
             # fig2, ax2 = plt.subplots()
             # ax2.imshow(rotIm, origin="lower")
-            return medVals, cPrime
+
+            return medVals,  cPrime
 
 
         return -1* medVals[cPrime] 
@@ -821,10 +822,8 @@ class sat_killer():
 
     def opt_streak_params(self, degBound=2, cBound=4):
         for i in range(len(self.streak_coef)):
-
             m = self.streak_coef[i,0]
             c = self.streak_coef[i,1]
-
 
             guessParams = [np.degrees(np.arctan(m)), c] 
             # guessParams = [np.degrees(np.arctan(m))+(np.random.rand()-0.5), c+4*(np.random.rand()-0.5)] 
@@ -847,9 +846,12 @@ class sat_killer():
 
             print(guessGauss)
 
-            popt, pcov = curve_fit(self.gaussToOpt, xVals, medVals, p0=guessGauss) #TODO add std of each row as err vals, might help.
+            popt, pcov = curve_fit(self.gaussToOpt, xVals, medVals, p0=guessGauss) #// TODO add std of each row as err vals, might help.
+            #* std vals made fit worse. The peak is too variable along the row
 
             print(popt)
+
+            print(np.sqrt(np.diag(pcov)))
 
             fig, ax = plt.subplots()
 
@@ -858,19 +860,38 @@ class sat_killer():
             xs = np.linspace(0,self.unaltered_image.shape[1], 1000)
 
             ax.plot(xs, m*xs+c, ls="--")
-            ax.plot(xs, np.tan(np.radians(res.x[0]))*xs+res.x[1],ls=":")
+
+            newCoef = [np.tan(np.radians(res.x[0])),res.x[1]]
+
+            ax.plot(xs, newCoef[0]*xs+ newCoef[1],ls=":")
 
             ax.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
 
-            fig2, ax2 = plt.subplots()
-            ax2.plot(medVals)
-            ax2.axvline(cPrime, ls=":",c="k")
-            ax2.plot(xVals, self.gaussToOpt(xVals, *popt))
 
-            ax2.set(xlim=(popt[0]-5*popt[1], popt[0]+5*popt[1]))
+
+            fig1, ax1 = plt.subplots()
+            ax1.imshow(self.image, origin = "lower",cmap="gray")
+            ax1.plot(xs, m*xs+c, ls="--", label="Old Streak")
+            ax1.plot(xs, newCoef[0]*xs+ newCoef[1],ls=":",label="New Streak")
+            ax1.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
+            ax1.legend()
+
+            fig2, ax2 = plt.subplots()
+            ax2.scatter(xVals, medVals, marker="o", label="Medians")
+            # ax2.plot(medVals)
+            ax2.axvline(cPrime, ls=":",c="k", label=f"c\'")
+            ax2.plot(xVals, self.gaussToOpt(xVals, *popt), label="Fit Gaussian", c="tab:orange")
+
+            ax2.set(xlim=(popt[0]-5*popt[1], popt[0]+5*popt[1]),ylim=(0, 1.3*medVals[cPrime]), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
+
+            ax2.legend()
 
             kill
-            #! self.streak_coef[i] = res
+
+            self.streak_coef[i,0] = newCoef[0]
+            self.streak_coef[i,1] = newCoef[1]
+            self.gaussParams = popt
+
 
 
 
