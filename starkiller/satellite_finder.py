@@ -836,12 +836,13 @@ class sat_killer():
 
             res = minimize(self.rotMax, guessParams, bounds = [(guessParams[0]-degBound, guessParams[0]+degBound), (guessParams[1]-cBound, guessParams[1]+cBound)], method='nelder-mead')
 
-            print(res)
-            print("")
+            # print(res)
+            # print("")
             print(res.x)
 
             self.rotPlot = True
             medVals, stdVals, cPrime = self.rotMax(res.x)
+
             xVals = np.arange(medVals.shape[0])
 
             fitXVals = xVals[cPrime-20: cPrime+20]
@@ -862,8 +863,13 @@ class sat_killer():
             r= fitMedVals-self.gaussToOpt(fitXVals,*popt)
             chisq = np.sum((r/fitSigma)**2)
             print(chisq)
-            redChisq = chisq/(len(fitMedVals)-len(popt))
-            print(redChisq)
+            # redChisq = chisq/(len(fitMedVals)-len(popt))
+            # print(redChisq)
+            p=len(popt)
+            n = len(fitMedVals)
+            aic = chisq + 2*p +(2*p*(p+1))/(n-p-1)
+            print(aic)
+
 
             guessMoffat = [cPrime, 2, 2, medVals[cPrime],np.nanmean(medVals[np.nonzero(medVals)])]
             print("Moffat")
@@ -874,8 +880,11 @@ class sat_killer():
             rM= fitMedVals-self.moffat1dToOpt(fitXVals,*poptM)
             chisqM = np.sum((rM/fitSigma)**2)
             print(chisqM)
-            redChisqM = chisqM/(len(fitMedVals)-len(poptM))
-            print(redChisqM)            
+            # redChisqM = chisqM/(len(fitMedVals)-len(poptM))
+            # print(redChisqM)       
+            pM=len(poptM)
+            aicM = chisq + 2*pM +(2*pM*(pM+1))/(n-pM-1)
+            print(aicM)
 
 
             fig, ax = plt.subplots()
@@ -908,9 +917,9 @@ class sat_killer():
             ax2.errorbar(xVals, medVals, stdVals, fmt="o", label="Medians")
             # ax2.plot(medVals)
             ax2.axvline(cPrime, ls=":",c="k", label=f"c\'")
-            ax2.plot(modelPlotX, self.gaussToOpt(modelPlotX, *popt), label="Fit Gaussian", c="tab:orange")
+            ax2.plot(modelPlotX, self.gaussToOpt(modelPlotX, *popt), label=f"Gaussian \nAIC={aic:.2f}", c="tab:orange")
 
-            ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label="Fit Moffat", c="tab:green")
+            ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label=f"Moffat \nAIC={aicM:.2f}", c="tab:green")
 
             ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, 1.3*medVals[cPrime]), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
 
