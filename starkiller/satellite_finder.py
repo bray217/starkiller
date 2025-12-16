@@ -798,7 +798,8 @@ class sat_killer():
         rotIm[~np.isfinite(rotIm)]=0
 
         medVals = np.nanmedian(rotIm, axis=1)
-        
+        stdVals = np.nanstd(rotIm, axis=1)
+        cv=stdVals/medVals
 
         if self.rotPlot: 
 
@@ -809,16 +810,17 @@ class sat_killer():
             # fig2, ax2 = plt.subplots()
             # ax2.imshow(rotIm, origin="lower")
 
-            return medVals,  cPrime
+            return medVals, stdVals, cPrime
 
 
         return -1* medVals[cPrime] 
 
 
     def gaussToOpt(self, xs, mu, sigma, a, k):
-        return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k
+        return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k #Gaussian profile +k for offset
 
-
+    def moffat1dToOpt(self, xs, x0, gamma, alpha, a, k):
+        return a*(1+(xs-x0)**2/(gamma**2))**(-alpha) +k #from astropy Moffat1D() +k for offset
 
     def opt_streak_params(self, degBound=2, cBound=4):
         for i in range(len(self.streak_coef)):
@@ -839,19 +841,42 @@ class sat_killer():
             print(res.x)
 
             self.rotPlot = True
-            medVals, cPrime = self.rotMax(res.x)
+            medVals, stdVals, cPrime = self.rotMax(res.x)
             xVals = np.arange(medVals.shape[0])
+
+            fitXVals = xVals[cPrime-20: cPrime+20]
+            fitMedVals = medVals[cPrime-20: cPrime+20]
+            fitSigma = stdVals[cPrime-20: cPrime+20]
 
             guessGauss = [cPrime, 2, medVals[cPrime],np.nanmean(medVals[np.nonzero(medVals)])] #[mu, sigma, a, k]
 
+            print("Gaussian:")
             print(guessGauss)
 
-            popt, pcov = curve_fit(self.gaussToOpt, xVals, medVals, p0=guessGauss) #// TODO add std of each row as err vals, might help.
+            popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma) #// TODO add std of each row as err vals, might help.
             #* std vals made fit worse. The peak is too variable along the row
 
             print(popt)
-
             print(np.sqrt(np.diag(pcov)))
+
+            r= fitMedVals-self.gaussToOpt(fitXVals,*popt)
+            chisq = np.sum((r/fitSigma)**2)
+            print(chisq)
+            redChisq = chisq/(len(fitMedVals)-len(popt))
+            print(redChisq)
+
+            guessMoffat = [cPrime, 2, 2, medVals[cPrime],np.nanmean(medVals[np.nonzero(medVals)])]
+            print("Moffat")
+            print(guessMoffat)
+            poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma)
+            print(poptM)
+            print(np.sqrt(np.diag(pcovM)))
+            rM= fitMedVals-self.moffat1dToOpt(fitXVals,*poptM)
+            chisqM = np.sum((rM/fitSigma)**2)
+            print(chisqM)
+            redChisqM = chisqM/(len(fitMedVals)-len(poptM))
+            print(redChisqM)            
+
 
             fig, ax = plt.subplots()
 
@@ -876,13 +901,18 @@ class sat_killer():
             ax1.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
             ax1.legend()
 
-            fig2, ax2 = plt.subplots()
-            ax2.scatter(xVals, medVals, marker="o", label="Medians")
+            fig2, ax2 = plt.subplots(figsize=(12,6))
+
+            modelPlotX = np.linspace(fitXVals[0], fitXVals[-1],1000)
+
+            ax2.errorbar(xVals, medVals, stdVals, fmt="o", label="Medians")
             # ax2.plot(medVals)
             ax2.axvline(cPrime, ls=":",c="k", label=f"c\'")
-            ax2.plot(xVals, self.gaussToOpt(xVals, *popt), label="Fit Gaussian", c="tab:orange")
+            ax2.plot(modelPlotX, self.gaussToOpt(modelPlotX, *popt), label="Fit Gaussian", c="tab:orange")
 
-            ax2.set(xlim=(popt[0]-5*popt[1], popt[0]+5*popt[1]),ylim=(0, 1.3*medVals[cPrime]), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
+            ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label="Fit Moffat", c="tab:green")
+
+            ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, 1.3*medVals[cPrime]), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
 
             ax2.legend()
 
