@@ -456,7 +456,7 @@ class sat_killer():
             # ax.imshow(medIm, origin="lower")
 
 
-            medIm = self.image
+            # medIm = self.image
 
 
             #* ble inpainting to get a background to remove
@@ -469,15 +469,21 @@ class sat_killer():
             # fig.savefig(f"{self.savename}bkgRemIm.png")
             # cut = cube_cutout(bkgRemImCube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0]
             #! oversubtracts, or breaks everything. 
-            imMasked = np.where(self.mask[0],np.nan,medIm)
-            from skimage.restoration import inpaint
-            imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
-            bkgRemImCube = np.array([medIm-imFixed])
+            # imMasked = np.where(self.mask[0],np.nan,medIm)
+            # from skimage.restoration import inpaint
+            # imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
+            # bkgRemImCube = np.array([medIm-imFixed])
 
 
             psf = self.sat_psfs[i]
-            psf.fit_psf(np.nanmedian(cut, axis=0), limx=2, limy=2)
+            
+            #!no longer fitting psf.
+            # psf.fit_psf(np.nanmedian(cut, axis=0), limx=2, limy=2)
             # psf.fit_pos(np.nanmean(cut,axis=0),range=5)
+
+            #* doing this instead.
+            psf.sat_psf_from_opt_params(self.optParams[i])
+
             xoff = psf.source_x; yoff = psf.source_y
 
             flux,res = zip(*Parallel(n_jobs=self.num_cores)(delayed(psf.psf_flux)(image) for image in cut))
@@ -819,10 +825,11 @@ class sat_killer():
     def gaussToOpt(self, xs, mu, sigma, a, k):
         return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k #Gaussian profile +k for offset
 
-    def moffat1dToOpt(self, xs, x0, gamma, alpha, a, k):
-        return a*(1+(xs-x0)**2/(gamma**2))**(-alpha) +k #from astropy Moffat1D() +k for offset
+    def moffat1dToOpt(self, xs, x0, alpha, beta, a, k):
+        return a*(1+(xs-x0)**2/(alpha**2))**(-beta) +k #from astropy Moffat1D() +k for offset
 
     def opt_streak_params(self, degBound=2, cBound=4):
+        self.optParams = []
         for i in range(len(self.streak_coef)):
             m = self.streak_coef[i,0]
             c = self.streak_coef[i,1]
@@ -892,12 +899,14 @@ class sat_killer():
             ax.imshow(self.unaltered_image, origin = "lower",cmap="gray")
 
             xs = np.linspace(0,self.unaltered_image.shape[1], 1000)
+            
 
             ax.plot(xs, m*xs+c, ls="--")
 
             newCoef = [np.tan(np.radians(res.x[0])),res.x[1]]
 
-            ax.plot(xs, newCoef[0]*xs+ newCoef[1],ls=":")
+            ys = newCoef[0]*xs+ newCoef[1]
+            ax.plot(xs, ys,ls=":")
 
             ax.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
 
@@ -925,12 +934,32 @@ class sat_killer():
 
             ax2.legend()
 
-            kill
+            # kill
 
             self.streak_coef[i,0] = newCoef[0]
             self.streak_coef[i,1] = newCoef[1]
-            self.gaussParams = popt
+            # self.gaussParams = popt
+            # self.moffatParams = poptM
 
+            #TODO calculate these ones.
+            #! might have to depend on profile, as x, y could be propto mu or x0
+            # length = 1
+
+            # inImageIndex = (ys>=0) & (ys<=self.image.shape[0]) 
+            # xx = xs[inImageIndex]
+            # yy = ys[inImageIndex]
+
+            # lenght = np.sqrt((xx[0]-xx[-1])**2 + (yy[0] - yy[-1])**2)
+
+            # x_source = 0
+            # y_source = 0
+
+            if self.star_psf.psf_profile == 'moffat':
+                thisoptParams = [poptM[2],poptM[3]]#, length, res.x[0],x_source,y_source] #right len for moffat [alpha, beta#, length, angle, x_source, y_source]
+            elif self.star_psf.psf_profile == 'gaussian':
+                thisoptParams = [popt[1]]#, length, res.x[0],x_source,y_source] #right len for gaussian [stddev#, length, angle, x_source, y_source]
+
+            self.optParams.append(thisoptParams)
 
 
 
@@ -965,11 +994,11 @@ class sat_killer():
             self.__lc_stars_vetting()  #! would throw out sats 
             # #*Had to change this too
             # print(f"after vetting {self.streak_coef}") 
+
+            self.opt_streak_params()
+
             self._find_center() #! need to go here to update satcat after the vetting
             if len(self.streak_coef) > 0:
-                
-                self.opt_streak_params()
-                
                 self.make_mask()
                 self.plot_lines()
                 if self.savename is not None:

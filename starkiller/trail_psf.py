@@ -373,6 +373,26 @@ class create_psf():
                         #jac = '2-point',options={'finite_diff_rel_step':0.1})
         self.psf_fit = res
 
+    def sat_psf_from_opt_params(self, optParams):
+        """optParams should be the right lenght for the psf profile chosen"""
+        if self.psf_profile == 'moffat': #beta index
+            self.alpha = optParams[0]
+            self.beta = optParams[1]
+            # self.length = optParams[2]
+            # self.angle = optParams[3]
+            # self.source_x = optParams[4]
+            # self.source_y = optParams[5]
+            self.generate_line_psf()
+        elif self.psf_profile == 'gaussian':
+            self.stddev = optParams[0]
+            # self.length = optParams[1]
+            # self.angle = optParams[2]
+            # self.source_x = optParams[3]
+            # self.source_y = optParams[4]
+            self.generate_line_psf()
+
+
+
     def make_data_psf(self,data_cuts):
         """
         Create a PSF using the calibration stars. This does a better job for longer exposures with scintilation.
