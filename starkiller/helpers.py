@@ -2096,6 +2096,11 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
         medLim = np.nanmax([np.abs(np.abs(np.nanmedian(streakWaveMeds)) +np.abs(3*np.nanstd(streakWaveMeds))),np.abs(np.abs(np.nanmedian(diffSubWaveMeds)) +np.abs(3*np.nanstd(diffSubWaveMeds)))])
         stdLim = np.nanmax([np.abs(np.abs(np.nanmean(streakWaveStds)) +np.abs(3*np.nanstd(streakWaveStds))),np.abs(np.abs(np.nanmean(diffSubWaveStds)) +np.abs(3*np.nanstd(diffSubWaveStds)))])
 
+        if ~np.isfinite(meanLim): #! Somehow they can still be nan or inf. IDK how but I need to stop it from erroring
+            meanLim=10
+            medLim = 10
+            stdLim = 10
+
         ax[0].set(ylim = (-meanLim,meanLim),xlim=plotxLim, ylabel = "Means")
         ax[1].set(ylim = (-medLim, medLim), ylabel = "Medians")
         ax[2].set(ylim = (0,stdLim), ylabel = "Stds", xlabel=f"Wavelength ($\AA$)")
