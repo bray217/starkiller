@@ -816,7 +816,7 @@ class sat_killer():
             # fig2, ax2 = plt.subplots()
             # ax2.imshow(rotIm, origin="lower")
 
-            return medVals, stdVals, cPrime
+            return medVals, stdVals, cPrime, offset
 
 
         return -1* medVals[cPrime] 
@@ -825,8 +825,8 @@ class sat_killer():
     def gaussToOpt(self, xs, mu, sigma, a, k):
         return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k #Gaussian profile +k for offset
 
-    def moffat1dToOpt(self, xs, x0, alpha, beta, a, k):
-        return a*(1+(xs-x0)**2/(alpha**2))**(-beta) +k #from astropy Moffat1D() +k for offset
+    def moffat1dToOpt(self, xs, x0, alpha, beta, k):
+        return ((beta-1)/np.pi*alpha**2)*(1+(xs-x0)**2/(alpha**2))**(-beta) +k #from astropy Moffat1D() +k for offset
 
     def opt_streak_params(self, degBound=2, cBound=4):
         self.optParams = []
@@ -848,7 +848,7 @@ class sat_killer():
             print(res.x)
 
             self.rotPlot = True
-            medVals, stdVals, cPrime = self.rotMax(res.x)
+            medVals, stdVals, cPrime, offset = self.rotMax(res.x)
 
             xVals = np.arange(medVals.shape[0])
 
@@ -878,7 +878,7 @@ class sat_killer():
             print(aic)
 
 
-            guessMoffat = [cPrime, 2, 2, medVals[cPrime],np.nanmean(medVals[np.nonzero(medVals)])]
+            guessMoffat = [cPrime, 2, 2, np.nanmean(medVals[np.nonzero(medVals)])] #medVals[cPrime],
             print("Moffat")
             print(guessMoffat)
             poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma)
@@ -890,7 +890,7 @@ class sat_killer():
             # redChisqM = chisqM/(len(fitMedVals)-len(poptM))
             # print(redChisqM)       
             pM=len(poptM)
-            aicM = chisq + 2*pM +(2*pM*(pM+1))/(n-pM-1)
+            aicM = chisqM + 2*pM +(2*pM*(pM+1))/(n-pM-1)
             print(aicM)
 
 
@@ -936,8 +936,7 @@ class sat_killer():
 
             # kill
 
-            self.streak_coef[i,0] = newCoef[0]
-            self.streak_coef[i,1] = newCoef[1]
+
             # self.gaussParams = popt
             # self.moffatParams = poptM
 
@@ -954,12 +953,22 @@ class sat_killer():
             # x_source = 0
             # y_source = 0
 
+            print(newCoef)
+
             if self.star_psf.psf_profile == 'moffat':
-                thisoptParams = [poptM[2],poptM[3]]#, length, res.x[0],x_source,y_source] #right len for moffat [alpha, beta#, length, angle, x_source, y_source]
+                thisoptParams = [poptM[1],poptM[2]]#, length, res.x[0],x_source,y_source] #right len for moffat [alpha, beta#, length, angle, x_source, y_source]
+                newCoef[1] = (poptM[0]-offset)/np.cos(np.arctan(newCoef[0])) #change +c to be from what was found to be peak of distribution 
+
             elif self.star_psf.psf_profile == 'gaussian':
                 thisoptParams = [popt[1]]#, length, res.x[0],x_source,y_source] #right len for gaussian [stddev#, length, angle, x_source, y_source]
+                newCoef[1] = (popt[0]-offset)/np.cos(np.arctan(newCoef[0]))
 
+            print(newCoef)
+
+            self.streak_coef[i,0] = newCoef[0]
+            self.streak_coef[i,1] = newCoef[1]
             self.optParams.append(thisoptParams)
+            # kill
 
 
 
