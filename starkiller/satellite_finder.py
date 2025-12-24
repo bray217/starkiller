@@ -435,6 +435,9 @@ class sat_killer():
             elif 'moffat' in self.star_psf.psf_profile:
                 self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
                                            length = self.lengths[i],alpha=self.star_psf.alpha,beta=self.star_psf.beta)]
+            # elif "moffat_sat" in self.star_psf.psf_profile:
+            #     self.sat_psfs += [[create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
+            #                                length = self.lengths[i],alpha=self.star_psf.alpha,beta=self.star_psf.beta)]]
         
             
             
@@ -826,7 +829,7 @@ class sat_killer():
         return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k #Gaussian profile +k for offset
 
     def moffat1dToOpt(self, xs, x0, alpha, beta, k):
-        return ((beta-1)/np.pi*alpha**2)*(1+(xs-x0)**2/(alpha**2))**(-beta) +k #from astropy Moffat1D() +k for offset
+        return ((beta-1)/(np.pi*(alpha**2)))*(1+(((xs-x0)**2)/(alpha**2)))**(-beta) +k #from astropy Moffat1D() +k for offset
 
     def opt_streak_params(self, degBound=2, cBound=4):
         self.optParams = []
@@ -852,16 +855,23 @@ class sat_killer():
 
             xVals = np.arange(medVals.shape[0])
 
-            fitXVals = xVals[cPrime-20: cPrime+20]
-            fitMedVals = medVals[cPrime-20: cPrime+20]
-            fitSigma = stdVals[cPrime-20: cPrime+20]
+            fitHWidth = 15
 
-            guessGauss = [cPrime, 2, medVals[cPrime],np.nanmean(medVals[np.nonzero(medVals)])] #[mu, sigma, a, k]
+            fitXVals = xVals[cPrime-fitHWidth: cPrime+fitHWidth]
+            fitMedVals = medVals[cPrime-fitHWidth: cPrime+fitHWidth]
+            fitSigma = stdVals[cPrime-fitHWidth: cPrime+fitHWidth]
+
+            guessAmp = medVals[cPrime]
+            guessK =np.nanmean(medVals[np.nonzero(medVals)])
+
+            guessGauss = [cPrime, 2, guessAmp,guessK] #[mu, sigma, a, k]
+
+            boundsGauss = ([cPrime-0.5,1,2*guessAmp/3,guessK-1],[cPrime+0.5,15,3*guessAmp/2,guessK+1])
 
             print("Gaussian:")
             print(guessGauss)
 
-            popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma) #// TODO add std of each row as err vals, might help.
+            popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma, bounds=boundsGauss) #// TODO add std of each row as err vals, might help.
             #* std vals made fit worse. The peak is too variable along the row
 
             print(popt)
@@ -878,10 +888,11 @@ class sat_killer():
             print(aic)
 
 
-            guessMoffat = [cPrime, 2, 2, np.nanmean(medVals[np.nonzero(medVals)])] #medVals[cPrime],
+            guessMoffat = [cPrime, 2, 2, guessK] #medVals[cPrime],
+            boundsMoffat = ([cPrime-0.5,0,0,guessK-1],[cPrime+0.5,5,5,guessK+1])
             print("Moffat")
             print(guessMoffat)
-            poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma)
+            poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma, bounds=boundsMoffat)
             print(poptM)
             print(np.sqrt(np.diag(pcovM)))
             rM= fitMedVals-self.moffat1dToOpt(fitXVals,*poptM)
@@ -926,13 +937,15 @@ class sat_killer():
             ax2.errorbar(xVals, medVals, stdVals, fmt="o", label="Medians")
             # ax2.plot(medVals)
             ax2.axvline(cPrime, ls=":",c="k", label=f"c\'")
-            ax2.plot(modelPlotX, self.gaussToOpt(modelPlotX, *popt), label=f"Gaussian \nAIC={aic:.2f}", c="tab:orange")
+            ax2.plot(modelPlotX, self.gaussToOpt(modelPlotX, *popt), label=f"Gaussian \n{[f'{val:.2e}' for val in popt]} \nAIC={aic:.2f}", c="tab:orange")
 
-            ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label=f"Moffat \nAIC={aicM:.2f}", c="tab:green")
+            ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label=f"Moffat \n{[f'{val:.2e}' for val in poptM]} \nAIC={aicM:.2f}", c="tab:green")
 
             ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, 1.3*medVals[cPrime]), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
 
             ax2.legend()
+
+            fig2.savefig(f"{self.savename}psf_fit_medians_sat{i+1}.png")
 
             # kill
 
@@ -955,7 +968,7 @@ class sat_killer():
 
             print(newCoef)
 
-            if self.star_psf.psf_profile == 'moffat':
+            if self.star_psf.psf_profile == 'moffat_sat':
                 thisoptParams = [poptM[1],poptM[2]]#, length, res.x[0],x_source,y_source] #right len for moffat [alpha, beta#, length, angle, x_source, y_source]
                 newCoef[1] = (poptM[0]-offset)/np.cos(np.arctan(newCoef[0])) #change +c to be from what was found to be peak of distribution 
 
@@ -968,7 +981,7 @@ class sat_killer():
             self.streak_coef[i,0] = newCoef[0]
             self.streak_coef[i,1] = newCoef[1]
             self.optParams.append(thisoptParams)
-            # kill
+        # kill
 
 
 

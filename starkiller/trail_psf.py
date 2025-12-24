@@ -198,6 +198,11 @@ class create_psf():
         #normalized flux profile return 1.-(1.+(rad/self.alpha)**2)**(1.-self.beta)
         a2=self.alpha*self.alpha
         return (self.beta-1)/(np.pi*a2)*(1.+(rad/self.alpha)**2)**(-self.beta)
+    
+    # def moffat_sat(self, rad):
+    #     #normalized flux profile return 1.-(1.+(rad/self.alpha)**2)**(1.-self.beta)
+    #     a2=self.alpha*self.alpha
+    #     return self.amp*(1.+(rad/self.alpha)**2)**(-self.beta)
 
     def gauss2d(self,x,y):
         """
@@ -390,7 +395,15 @@ class create_psf():
             # self.source_x = optParams[3]
             # self.source_y = optParams[4]
             self.generate_line_psf()
-
+        # elif self.psf_profile == 'moffat_sat':
+        #     self.alpha = optParams[0]
+        #     self.beta = optParams[1]
+        #     self.amp = optParams[2]
+        #     # self.length = optParams[2]
+        #     # self.angle = optParams[3]
+        #     # self.source_x = optParams[4]
+        #     # self.source_y = optParams[5]
+        #     self.generate_line_psf()
 
 
     def make_data_psf(self,data_cuts):
