@@ -110,6 +110,10 @@ class sat_killer():
             fig.savefig(f"{self.savename}sat_image.png")
         else:
             fig.savefig(f"./sat_image_{maxPer}_{minPer}.png")
+        
+        # fig1, ax1 = plt.subplots()
+        # ax1.imshow(self.unaltered_image, origin="lower", cmap="gray")
+
 
     
     def _set_threshold(self,sigma):
@@ -298,7 +302,8 @@ class sat_killer():
             ind = (yy > 0) & (yy < self.image.shape[0])
             lc = self.image[yy[ind],xx[ind]] #! if image angled, the streak can be to short, and therefore the median is low, but a largeish fraction is still streak (ble) 
 
-            lc = lc[np.where(lc!=2)]  #*This should fix the above, as 2 is never (well, it shouldn't be) anywhere in frame (ble)
+            # lc = lc[np.where(lc!=2)]  #*This should fix the above, as 2 is never (well, it shouldn't be) anywhere in frame (ble)
+            lc = lc[np.where(lc>2.0)]
 
             mean, med, std = sigma_clipped_stats(lc)
             if std == 0:
@@ -336,7 +341,8 @@ class sat_killer():
             yy = (yy+0.5).astype(int)
             ind = (yy > 0) & (yy < self.image.shape[0])
             lc = self.image[yy[ind],xx[ind]]
-            lc = lc[np.where(lc!=2)] #* Same as in __lc_varitaion_test()  (ble)
+            # lc = lc[np.where(lc!=2)] #* Same as in __lc_varitaion_test()  (ble)
+            lc = lc[np.where(lc>2.0)]
             mean, med, std = sigma_clipped_stats(lc)
             pmean, pmed, pstd = sigma_clipped_stats(self.image,maxiters=20)
             cond = med > pmed + sigma*pstd
@@ -371,10 +377,12 @@ class sat_killer():
         angles = []
         cut_dims = []
         for c in self.streak_coef:
+            # print("c:", c)
             xx = np.arange(0,self.image.shape[1],0.5)
             yy = xx*c[0] + c[1]
             ind = (yy >= 0) & (yy <= self.image.shape[0]) #*ble added = to inequality, so lines on edges were detected. They should get droped later. 
             yy = yy[ind]; xx = xx[ind]
+            # print("xx,yy:",xx, yy)
             centers += [[np.nanmean(xx),np.nanmean(yy)]]
             lengths += [np.sqrt((xx[0]-xx[-1])**2 + (yy[0] - yy[-1])**2)]
             angles += [np.arctan2(yy[-1] - yy[0], xx[-1] - xx[0]) * 180 / np.pi]
@@ -384,6 +392,8 @@ class sat_killer():
         self.angles = np.array(angles)
         self.cut_dims = (np.array(cut_dims) * 1.5).astype(int) #! divide by 2, multiply by 1.5??? (ble)
         
+        # print("centers:",self.centers)
+
         satcat = pd.DataFrame([])
         satcat['xint'] = self.centers[:,0].astype(int)
         satcat['yint'] = self.centers[:,1].astype(int)
@@ -630,7 +640,7 @@ class sat_killer():
             #Scanning along rows
             medVals = np.nanmedian(np.where(rotIm>2, rotIm, np.nan), axis=1) #* now only taking values in field (2 is off-sky black in quicklooks.)
 
-
+            # medVals /= np.nanstd(np.where(rotIm>2, rotIm, np.nan), axis=1)
 
             sigVals = np.nanstd(rotIm, axis=1)
             #Stats for whole axis
@@ -821,8 +831,10 @@ class sat_killer():
 
             return medVals, stdVals, cPrime, offset
 
-
-        return -1* medVals[cPrime] 
+        try:
+            return -1* medVals[cPrime] 
+        except:
+            return 0
 
 
     def gaussToOpt(self, xs, mu, sigma, a, k):
@@ -833,6 +845,7 @@ class sat_killer():
 
     def opt_streak_params(self, degBound=2, cBound=4):
         self.optParams = []
+        # print("coefs to opt:", self.streak_coef)
         for i in range(len(self.streak_coef)):
             m = self.streak_coef[i,0]
             c = self.streak_coef[i,1]
@@ -866,7 +879,7 @@ class sat_killer():
 
             guessGauss = [cPrime, 2, guessAmp,guessK] #[mu, sigma, a, k]
 
-            boundsGauss = ([cPrime-0.5,1,2*guessAmp/3,guessK-1],[cPrime+0.5,15,3*guessAmp/2,guessK+1])
+            boundsGauss = ([cPrime-0.5,1,2*guessAmp/3,guessK-1],[cPrime+0.5,15,3*guessAmp/2 if guessAmp !=0 else 0.1,guessK+1]) #! conditional to try and stop 0 amp throwing error. 
 
             print("Gaussian:")
             print(guessGauss)
@@ -941,7 +954,7 @@ class sat_killer():
 
             ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label=f"Moffat \n{[f'{val:.2e}' for val in poptM]} \nAIC={aicM:.2f}", c="tab:green")
 
-            ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, 1.3*medVals[cPrime]), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
+            ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, np.max([1.3*medVals[cPrime],1])), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
 
             ax2.legend()
 
@@ -981,6 +994,7 @@ class sat_killer():
             self.streak_coef[i,0] = newCoef[0]
             self.streak_coef[i,1] = newCoef[1]
             self.optParams.append(thisoptParams)
+        print("opt coefs:", self.streak_coef)
         # kill
 
 
@@ -1020,6 +1034,9 @@ class sat_killer():
             self.opt_streak_params()
 
             self._find_center() #! need to go here to update satcat after the vetting
+
+            # kill
+
             if len(self.streak_coef) > 0:
                 self.make_mask()
                 self.plot_lines()
