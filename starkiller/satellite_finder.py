@@ -65,7 +65,6 @@ class sat_killer():
                 self._detected()
                 if self.sat_num > 0:
                     self.make_satellite_psf()
-                    #? self.fitpsf() should be here??
                     self._fit_spec()
 
     def _make_image(self, minPer:float=2.0,maxPer:float=98.0):
@@ -643,6 +642,7 @@ class sat_killer():
             # medVals /= np.nanstd(np.where(rotIm>2, rotIm, np.nan), axis=1)
 
             sigVals = np.nanstd(rotIm, axis=1)
+
             #Stats for whole axis
             mean, med, sig = sigma_clipped_stats(medVals)
         
@@ -660,6 +660,7 @@ class sat_killer():
             #only looking close to streak
             medOfInterest = medVals[minVal:maxVal]
             sigOfInterest = sigVals[minVal:maxVal]
+            sigOfInterest[~np.isfinite(sigOfInterest)] = -1
 
             #* uses peakWidth as FWHM of peaks 
             # pPrime , _ = find_peaks(medOfInterest, height=mean + 5*sig, distance=peakWidth) 
@@ -682,7 +683,7 @@ class sat_killer():
                     continue
                 
                 downMed = medOfInterest[p-sideshift]
-                downSig = round(sigOfInterest[p-sideshift],0)
+                downSig = round(sigOfInterest[p-sideshift],0)               
 
                 upMed = medOfInterest[p+sideshift]
                 upSig = round(sigOfInterest[p+sideshift])
@@ -845,6 +846,8 @@ class sat_killer():
 
     def opt_streak_params(self, degBound=2, cBound=4):
         self.optParams = []
+        self.streakLens = []
+        self.streak_widths = []
         # print("coefs to opt:", self.streak_coef)
         for i in range(len(self.streak_coef)):
             m = self.streak_coef[i,0]
@@ -883,9 +886,12 @@ class sat_killer():
 
             print("Gaussian:")
             print(guessGauss)
-
-            popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma, bounds=boundsGauss) #// TODO add std of each row as err vals, might help.
-            #* std vals made fit worse. The peak is too variable along the row
+            try:
+                popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma, bounds=boundsGauss) #// TODO add std of each row as err vals, might help.
+                #* std vals made fit worse. The peak is too variable along the row
+            except:
+                popt = guessGauss
+                pcovM = np.zeros((4,4))
 
             print(popt)
             print(np.sqrt(np.diag(pcov)))
@@ -905,7 +911,12 @@ class sat_killer():
             boundsMoffat = ([cPrime-0.5,0,0,guessK-1],[cPrime+0.5,5,5,guessK+1])
             print("Moffat")
             print(guessMoffat)
-            poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma, bounds=boundsMoffat)
+            try:
+                poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma, bounds=boundsMoffat)
+            except:
+                poptM = guessMoffat
+                pcovM = np.zeros((4,4))
+
             print(poptM)
             print(np.sqrt(np.diag(pcovM)))
             rM= fitMedVals-self.moffat1dToOpt(fitXVals,*poptM)
@@ -922,14 +933,60 @@ class sat_killer():
 
             ax.imshow(self.unaltered_image, origin = "lower",cmap="gray")
 
-            xs = np.linspace(0,self.unaltered_image.shape[1], 1000)
-            
+            xs = np.arange(0,self.unaltered_image.shape[1]+1, dtype=int)
 
             ax.plot(xs, m*xs+c, ls="--")
 
             newCoef = [np.tan(np.radians(res.x[0])),res.x[1]]
 
             ys = newCoef[0]*xs+ newCoef[1]
+            ys = (ys+0.5).astype(int)
+            # print("Trying to find distance")
+
+            # ind = (ys >= 0) & (ys <= self.image.shape[0])
+
+            # xs=xs[ind]
+            # ys=ys[ind]
+
+
+            # lc = self.image[ys, xs] 
+            # goodInds = np.where(lc>2.0)
+            # lc = lc[goodInds]
+            # xs=xs[goodInds]
+            # ys=ys[goodInds]
+
+            # #? distPx = lc.shape[0]
+            # #coordStart = skycoord(xs[0], ys[0])
+            # #coordEnd = skycoord(xs[-1], ys[-1])
+            # #distRad = coordStart.seperation(coordEnd).rad
+
+
+            # y2 = np.abs(ys[-1]-ys[0])**2 #squared len in px^2
+            # x2 = np.abs(xs[-1]-xs[0])**2 #px^2
+
+            # print(x2, y2)
+
+
+            # xlenPx = self.image.shape[1] #px/arcmin as 1'x1' FOV #! this assumes pos angle of 0
+            # ylenPx = self.image.shape[0] #px/arcmin
+
+            # x2 /=xlenPx**2 #arcmin
+            # y2 /=ylenPx**2 #arcmin
+
+            # print(x2, y2)
+
+            # distArcmin = np.sqrt(x2+y2)
+
+            # distRad = distArcmin*(np.pi/(60*180))
+
+            # print(f"Angle in image is {distRad} Radians")
+
+
+
+            # self.streakLens.append(distRad)
+
+
+
             ax.plot(xs, ys,ls=":")
 
             ax.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
@@ -957,8 +1014,9 @@ class sat_killer():
             ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, np.max([1.3*medVals[cPrime],1])), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
 
             ax2.legend()
-
-            fig2.savefig(f"{self.savename}psf_fit_medians_sat{i+1}.png")
+            
+            if self.savename is not None:
+                fig2.savefig(f"{self.savename}psf_fit_medians_sat{i+1}.png")
 
             # kill
 
@@ -994,6 +1052,7 @@ class sat_killer():
             self.streak_coef[i,0] = newCoef[0]
             self.streak_coef[i,1] = newCoef[1]
             self.optParams.append(thisoptParams)
+            self.streak_widths.append(popt[1])
         print("opt coefs:", self.streak_coef)
         # kill
 
