@@ -1602,7 +1602,7 @@ def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=F
 
         ax.plot(xs, sat_bright, label = "Sat")
         ax.plot(xs, plus_bright , label = "+")
-        ax.plot(xs, minus_bright, label = "-")
+        ax.plot(xs, minus_bright, label = "-", c="C5")
         ax.plot(xs, sub_bright, label = "Sub")
 
         maskSum = np.nansum(satMask, axis=0)
@@ -1812,12 +1812,12 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
             ax[2].plot(lams, diffPlusWaveStds, ls="--")
                 
         if plotMinus:
-            ax[0].plot(lams, minusWaveMeans, label="-, Image")
-            ax[0].plot(lams, diffMinusWaveMeans, ls="--", label="-, Difference Image")
-            ax[1].plot(lams, minusWaveMeds)
-            ax[1].plot(lams, diffMinusWaveMeds, ls="--")
-            ax[2].plot(lams, minusWaveStds)
-            ax[2].plot(lams, diffMinusWaveStds, ls="--")
+            ax[0].plot(lams, minusWaveMeans, label="-, Image", c="C5")
+            ax[0].plot(lams, diffMinusWaveMeans, ls="--", label="-, Difference Image", c="C6")
+            ax[1].plot(lams, minusWaveMeds, c="C5")
+            ax[1].plot(lams, diffMinusWaveMeds, ls="--", c="C6")
+            ax[2].plot(lams, minusWaveStds, c="C5")
+            ax[2].plot(lams, diffMinusWaveStds, ls="--", c="C6")
         
         ax[0].legend()
 
