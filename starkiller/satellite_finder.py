@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy import ndimage
 from scipy.signal import find_peaks
+from scipy.optimize import curve_fit
 
 
 class sat_killer():
@@ -104,7 +105,6 @@ class sat_killer():
                 self._detected()
                 if self.sat_num > 0:
                     self.make_satellite_psf()
-                    #? self.fitpsf() should be here??
                     self._fit_spec()
 
     def _make_image(self, minPer:float=2.0,maxPer:float=98.0):
@@ -128,6 +128,8 @@ class sat_killer():
         #*ble, to make it more like a quicklook, which we know works for streak detection
         image = np.nanmedian(self.cube, axis = 0)
 
+        self.unaltered_image = deepcopy(image)
+
         #*Sets `quicklook-like` bounds, and applies them to the image
         vmin = np.nanpercentile(image, minPer).round(2) 
         vmax = np.nanpercentile(image, maxPer).round(2)
@@ -142,11 +144,15 @@ class sat_killer():
 
         #*Check to make sure the image was made when a line could be seen. 
         fig,  ax = plt.subplots()
-        ax.imshow(image, origin="lower", cmap="grey")
+        ax.imshow(image, origin="lower", cmap="gray")
         if self.savename is not None:
             fig.savefig(f"{self.savename}sat_image.png")
         else:
             fig.savefig(f"./sat_image_{maxPer}_{minPer}.png")
+        
+        # fig1, ax1 = plt.subplots()
+        # ax1.imshow(self.unaltered_image, origin="lower", cmap="gray")
+
 
     
     def _set_threshold(self,sigma):
@@ -341,7 +347,8 @@ class sat_killer():
             ind = (yy > 0) & (yy < self.image.shape[0])
             lc = self.image[yy[ind],xx[ind]] #! if image angled, the streak can be to short, and therefore the median is low, but a largeish fraction is still streak (ble) 
 
-            lc = lc[np.where(lc!=2)]  #*This should fix the above, as 2 is never (well, it shouldn't be) anywhere in frame (ble)
+            # lc = lc[np.where(lc!=2)]  #*This should fix the above, as 2 is never (well, it shouldn't be) anywhere in frame (ble)
+            lc = lc[np.where(lc>2.0)]
 
             mean, med, std = sigma_clipped_stats(lc)
             if std == 0:
@@ -379,7 +386,8 @@ class sat_killer():
             yy = (yy+0.5).astype(int)
             ind = (yy > 0) & (yy < self.image.shape[0])
             lc = self.image[yy[ind],xx[ind]]
-            lc = lc[np.where(lc!=2)] #* Same as in __lc_varitaion_test()  (ble)
+            # lc = lc[np.where(lc!=2)] #* Same as in __lc_varitaion_test()  (ble)
+            lc = lc[np.where(lc>2.0)]
             mean, med, std = sigma_clipped_stats(lc)
             pmean, pmed, pstd = sigma_clipped_stats(self.image,maxiters=20)
             cond = med > pmed + sigma*pstd
@@ -421,10 +429,12 @@ class sat_killer():
         angles = []
         cut_dims = []
         for c in self.streak_coef:
+            # print("c:", c)
             xx = np.arange(0,self.image.shape[1],0.5)
             yy = xx*c[0] + c[1]
             ind = (yy >= 0) & (yy <= self.image.shape[0]) #*ble added = to inequality, so lines on edges were detected. They should get droped later. 
             yy = yy[ind]; xx = xx[ind]
+            # print("xx,yy:",xx, yy)
             centers += [[np.nanmean(xx),np.nanmean(yy)]]
             lengths += [np.sqrt((xx[0]-xx[-1])**2 + (yy[0] - yy[-1])**2)]
             angles += [np.arctan2(yy[-1] - yy[0], xx[-1] - xx[0]) * 180 / np.pi]
@@ -434,6 +444,8 @@ class sat_killer():
         self.angles = np.array(angles)
         self.cut_dims = (np.array(cut_dims) * 1.5).astype(int) #! divide by 2, multiply by 1.5??? (ble)
         
+        # print("centers:",self.centers)
+
         satcat = pd.DataFrame([])
         satcat['xint'] = self.centers[:,0].astype(int)
         satcat['yint'] = self.centers[:,1].astype(int)
@@ -507,6 +519,9 @@ class sat_killer():
             elif 'moffat' in self.star_psf.psf_profile:
                 self.sat_psfs += [create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
                                            length = self.lengths[i],alpha=self.star_psf.alpha,beta=self.star_psf.beta)]
+            # elif "moffat_sat" in self.star_psf.psf_profile:
+            #     self.sat_psfs += [[create_psf(self.cut_dims[i,0]*2+1,self.cut_dims[i,1]*2+1,angle = self.angles[i],
+            #                                length = self.lengths[i],alpha=self.star_psf.alpha,beta=self.star_psf.beta)]]
         
             
             
@@ -517,9 +532,46 @@ class sat_killer():
         self.satcat['xoff'] = 0; self.satcat['yoff'] = 0;
         for i in range(self.sat_num):
             cut = cube_cutout(self.cube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0] #! still at 3/4 lenght 
+
+            # medIm = np.nanmedian(self.cube, axis=0)
+
+            # vmin = np.nanpercentile(medIm, 1).round(2) 
+            # vmax = np.nanpercentile(medIm, 99).round(2)
+            # medIm[medIm>=vmax] = vmax
+            # medIm[medIm<=vmin] = vmin
+
+            # fig, ax = plt.subplots()
+            # ax.imshow(medIm, origin="lower")
+
+
+            # medIm = self.image
+
+
+            #* ble inpainting to get a background to remove
+            # imMasked = np.where(self.mask[0],np.nan,self.image)
+            # from skimage.restoration import inpaint
+            # imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
+            # bkgRemImCube = np.array([self.image-imFixed])
+            # fig, ax = plt.subplots()
+            # ax.imshow(bkgRemImCube[0], origin="lower")
+            # fig.savefig(f"{self.savename}bkgRemIm.png")
+            # cut = cube_cutout(bkgRemImCube,self.satcat.iloc[i],self.cut_dims[i,0],self.cut_dims[i,1])[0]
+            #! oversubtracts, or breaks everything. 
+            # imMasked = np.where(self.mask[0],np.nan,medIm)
+            # from skimage.restoration import inpaint
+            # imFixed = inpaint.inpaint_biharmonic(imMasked, self.mask[0])
+            # bkgRemImCube = np.array([medIm-imFixed])
+
+
             psf = self.sat_psfs[i]
-            psf.fit_psf(np.nanmedian(cut, axis=0))
-            psf.fit_pos(np.nanmean(cut,axis=0),range=5)
+            
+            #!no longer fitting psf.
+            # psf.fit_psf(np.nanmedian(cut, axis=0), limx=2, limy=2)
+            # psf.fit_pos(np.nanmean(cut,axis=0),range=5)
+
+            #* doing this instead.
+            psf.sat_psf_from_opt_params(self.optParams[i])
+
             xoff = psf.source_x; yoff = psf.source_y
 
             flux,res = zip(*Parallel(n_jobs=self.num_cores)(delayed(psf.psf_flux)(image) for image in cut))
@@ -678,9 +730,10 @@ class sat_killer():
             #Scanning along rows
             medVals = np.nanmedian(np.where(rotIm>2, rotIm, np.nan), axis=1) #* now only taking values in field (2 is off-sky black in quicklooks.)
 
-
+            # medVals /= np.nanstd(np.where(rotIm>2, rotIm, np.nan), axis=1)
 
             sigVals = np.nanstd(rotIm, axis=1)
+
             #Stats for whole axis
             mean, med, sig = sigma_clipped_stats(medVals)
         
@@ -698,9 +751,11 @@ class sat_killer():
             #only looking close to streak
             medOfInterest = medVals[minVal:maxVal]
             sigOfInterest = sigVals[minVal:maxVal]
+            sigOfInterest[~np.isfinite(sigOfInterest)] = -1
 
             #* uses peakWidth as FWHM of peaks 
-            pPrime , _ = find_peaks(medOfInterest, height=mean + 5*sig, distance=peakWidth) 
+            # pPrime , _ = find_peaks(medOfInterest, height=mean + 5*sig, distance=peakWidth) 
+            pPrime , _ = find_peaks(medOfInterest, height=mean + 4*sig, distance=peakWidth) 
 
             minMed = np.nanmin(medOfInterest)
             sideshift = 10 #*Magic number
@@ -719,7 +774,7 @@ class sat_killer():
                     continue
                 
                 downMed = medOfInterest[p-sideshift]
-                downSig = round(sigOfInterest[p-sideshift],0)
+                downSig = round(sigOfInterest[p-sideshift],0)               
 
                 upMed = medOfInterest[p+sideshift]
                 upSig = round(sigOfInterest[p+sideshift])
@@ -757,7 +812,8 @@ class sat_killer():
                 fig3, ax3 = plt.subplots(figsize=(12,6))
                 ax3.plot(medVals)
                 # ax2.set(xlim=(cPrime-60,cPrime +60))
-                ax3.axhline(mean + 5*sig, label=f"Detection lower limit, $\mu + 5\sigma$", ls=":", c="r")
+                # ax3.axhline(mean + 5*sig, label=f"Detection lower limit, $\mu + 5\sigma$", ls=":", c="r")
+                ax3.axhline(mean + 4*sig, label=f"Detection lower limit, $\mu + 4\sigma$", ls=":", c="r")
                 ax3.vlines(np.round(oldStreakCoefs[:,1] *np.cos(theta) +offset,0).astype(int),0,np.nanmax(medVals)+10, label="Detected Satellites", colors="k")
                 # ax3.vlines(pPrime,0,255)
                 ax3.set(xlabel="Row", ylabel ="Median Intensity")
@@ -827,6 +883,271 @@ class sat_killer():
             #TODO Check if it needs to be done again.
             self._find_center() 
 
+    def rotMax(self, coef):
+
+        """coef = [theta, c], with theta in *degrees* """
+
+        theta,c = coef
+
+        image = self.unaltered_image
+        
+        image[~np.isfinite(image)]=0
+
+        rotIm = ndimage.rotate(image, theta, cval=np.nan)
+        # rotIm = rotIm.astype(np.float64)
+        # rotIm[rotIm<=2] = np.nan
+
+        xLen = image.shape[1]
+        offset = np.sin(np.radians(theta))*xLen
+        if theta <0:
+            offset=0
+
+        cPrime = int(round(c *np.cos(np.radians(theta)) +offset,0)) 
+
+        # medVals = np.nanmedian(np.where(rotIm>2, rotIm, np.nan), axis=1)
+
+        rotIm[~np.isfinite(rotIm)]=0
+
+        medVals = np.nanmedian(rotIm, axis=1)
+        stdVals = np.nanstd(rotIm, axis=1)
+        cv=stdVals/medVals
+
+        if self.rotPlot: 
+
+            fig, ax = plt.subplots()
+            ax.plot(medVals)
+            ax.axvline(cPrime)
+
+            # fig2, ax2 = plt.subplots()
+            # ax2.imshow(rotIm, origin="lower")
+
+            return medVals, stdVals, cPrime, offset
+
+        try:
+            return -1* medVals[cPrime] 
+        except:
+            return 0
+
+
+    def gaussToOpt(self, xs, mu, sigma, a, k):
+        return a*np.exp(-(xs-mu)**2/(2*sigma**2)) +k #Gaussian profile +k for offset
+
+    def moffat1dToOpt(self, xs, x0, alpha, beta, k):
+        return ((beta-1)/(np.pi*(alpha**2)))*(1+(((xs-x0)**2)/(alpha**2)))**(-beta) +k #from astropy Moffat1D() +k for offset
+
+    def opt_streak_params(self, degBound=2, cBound=4):
+        self.optParams = []
+        self.streakLens = []
+        self.streak_widths = []
+        # print("coefs to opt:", self.streak_coef)
+        for i in range(len(self.streak_coef)):
+            m = self.streak_coef[i,0]
+            c = self.streak_coef[i,1]
+
+            guessParams = [np.degrees(np.arctan(m)), c] 
+            # guessParams = [np.degrees(np.arctan(m))+(np.random.rand()-0.5), c+4*(np.random.rand()-0.5)] 
+
+            print(guessParams)
+
+            self.rotPlot = False
+
+            res = minimize(self.rotMax, guessParams, bounds = [(guessParams[0]-degBound, guessParams[0]+degBound), (guessParams[1]-cBound, guessParams[1]+cBound)], method='nelder-mead')
+
+            # print(res)
+            # print("")
+            print(res.x)
+
+            self.rotPlot = True
+            medVals, stdVals, cPrime, offset = self.rotMax(res.x)
+
+            xVals = np.arange(medVals.shape[0])
+
+            fitHWidth = 15
+
+            fitXVals = xVals[cPrime-fitHWidth: cPrime+fitHWidth]
+            fitMedVals = medVals[cPrime-fitHWidth: cPrime+fitHWidth]
+            fitSigma = stdVals[cPrime-fitHWidth: cPrime+fitHWidth]
+
+            guessAmp = medVals[cPrime]
+            guessK =np.nanmean(medVals[np.nonzero(medVals)])
+
+            guessGauss = [cPrime, 2, guessAmp,guessK] #[mu, sigma, a, k]
+
+            boundsGauss = ([cPrime-0.5,1,2*guessAmp/3,guessK-1],[cPrime+0.5,15,3*guessAmp/2 if guessAmp !=0 else 0.1,guessK+1]) #! conditional to try and stop 0 amp throwing error. 
+
+            print("Gaussian:")
+            print(guessGauss)
+            try:
+                popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma, bounds=boundsGauss) #// TODO add std of each row as err vals, might help.
+                #* std vals made fit worse. The peak is too variable along the row
+            except:
+                popt = guessGauss
+                pcovM = np.zeros((4,4))
+
+            print(popt)
+            print(np.sqrt(np.diag(pcov)))
+
+            r= fitMedVals-self.gaussToOpt(fitXVals,*popt)
+            chisq = np.sum((r/fitSigma)**2)
+            print(chisq)
+            # redChisq = chisq/(len(fitMedVals)-len(popt))
+            # print(redChisq)
+            p=len(popt)
+            n = len(fitMedVals)
+            aic = chisq + 2*p +(2*p*(p+1))/(n-p-1)
+            print(aic)
+
+
+            guessMoffat = [cPrime, 2, 2, guessK] #medVals[cPrime],
+            boundsMoffat = ([cPrime-0.5,0,0,guessK-1],[cPrime+0.5,5,5,guessK+1])
+            print("Moffat")
+            print(guessMoffat)
+            try:
+                poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma, bounds=boundsMoffat)
+            except:
+                poptM = guessMoffat
+                pcovM = np.zeros((4,4))
+
+            print(poptM)
+            print(np.sqrt(np.diag(pcovM)))
+            rM= fitMedVals-self.moffat1dToOpt(fitXVals,*poptM)
+            chisqM = np.sum((rM/fitSigma)**2)
+            print(chisqM)
+            # redChisqM = chisqM/(len(fitMedVals)-len(poptM))
+            # print(redChisqM)       
+            pM=len(poptM)
+            aicM = chisqM + 2*pM +(2*pM*(pM+1))/(n-pM-1)
+            print(aicM)
+
+
+            fig, ax = plt.subplots()
+
+            ax.imshow(self.unaltered_image, origin = "lower",cmap="gray")
+
+            xs = np.arange(0,self.unaltered_image.shape[1]+1, dtype=int)
+
+            ax.plot(xs, m*xs+c, ls="--")
+
+            newCoef = [np.tan(np.radians(res.x[0])),res.x[1]]
+
+            ys = newCoef[0]*xs+ newCoef[1]
+            ys = (ys+0.5).astype(int)
+            # print("Trying to find distance")
+
+            # ind = (ys >= 0) & (ys <= self.image.shape[0])
+
+            # xs=xs[ind]
+            # ys=ys[ind]
+
+
+            # lc = self.image[ys, xs] 
+            # goodInds = np.where(lc>2.0)
+            # lc = lc[goodInds]
+            # xs=xs[goodInds]
+            # ys=ys[goodInds]
+
+            # #? distPx = lc.shape[0]
+            # #coordStart = skycoord(xs[0], ys[0])
+            # #coordEnd = skycoord(xs[-1], ys[-1])
+            # #distRad = coordStart.seperation(coordEnd).rad
+
+
+            # y2 = np.abs(ys[-1]-ys[0])**2 #squared len in px^2
+            # x2 = np.abs(xs[-1]-xs[0])**2 #px^2
+
+            # print(x2, y2)
+
+
+            # xlenPx = self.image.shape[1] #px/arcmin as 1'x1' FOV #! this assumes pos angle of 0
+            # ylenPx = self.image.shape[0] #px/arcmin
+
+            # x2 /=xlenPx**2 #arcmin
+            # y2 /=ylenPx**2 #arcmin
+
+            # print(x2, y2)
+
+            # distArcmin = np.sqrt(x2+y2)
+
+            # distRad = distArcmin*(np.pi/(60*180))
+
+            # print(f"Angle in image is {distRad} Radians")
+
+
+
+            # self.streakLens.append(distRad)
+
+
+
+            ax.plot(xs, ys,ls=":")
+
+            ax.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
+
+
+
+            fig1, ax1 = plt.subplots()
+            ax1.imshow(self.image, origin = "lower",cmap="gray")
+            ax1.plot(xs, m*xs+c, ls="--", label="Old Streak")
+            ax1.plot(xs, newCoef[0]*xs+ newCoef[1],ls=":",label="New Streak")
+            ax1.set(xlim=(0,self.image.shape[1]), ylim=(0,self.image.shape[0]))
+            ax1.legend()
+
+            fig2, ax2 = plt.subplots(figsize=(12,6))
+
+            modelPlotX = np.linspace(fitXVals[0], fitXVals[-1],1000)
+
+            ax2.errorbar(xVals, medVals, stdVals, fmt="o", label="Medians")
+            # ax2.plot(medVals)
+            ax2.axvline(cPrime, ls=":",c="k", label=f"c\'")
+            ax2.plot(modelPlotX, self.gaussToOpt(modelPlotX, *popt), label=f"Gaussian \n{[f'{val:.2e}' for val in popt]} \nAIC={aic:.2f}", c="tab:orange")
+
+            ax2.plot(modelPlotX, self.moffat1dToOpt(modelPlotX, *poptM), label=f"Moffat \n{[f'{val:.2e}' for val in poptM]} \nAIC={aicM:.2f}", c="tab:green")
+
+            ax2.set(xlim=(fitXVals[0]-1, fitXVals[-1]+1),ylim=(-1, np.max([1.3*medVals[cPrime],1])), xlabel=f"Row (Rotated to \' frame)", ylabel="Median Flux")
+
+            ax2.legend()
+            
+            if self.savename is not None:
+                fig2.savefig(f"{self.savename}psf_fit_medians_sat{i+1}.png")
+
+            # kill
+
+
+            # self.gaussParams = popt
+            # self.moffatParams = poptM
+
+            #TODO calculate these ones.
+            #! might have to depend on profile, as x, y could be propto mu or x0
+            # length = 1
+
+            # inImageIndex = (ys>=0) & (ys<=self.image.shape[0]) 
+            # xx = xs[inImageIndex]
+            # yy = ys[inImageIndex]
+
+            # lenght = np.sqrt((xx[0]-xx[-1])**2 + (yy[0] - yy[-1])**2)
+
+            # x_source = 0
+            # y_source = 0
+
+            print(newCoef)
+
+            if self.star_psf.psf_profile == 'moffat_sat':
+                thisoptParams = [poptM[1],poptM[2]]#, length, res.x[0],x_source,y_source] #right len for moffat [alpha, beta#, length, angle, x_source, y_source]
+                newCoef[1] = (poptM[0]-offset)/np.cos(np.arctan(newCoef[0])) #change +c to be from what was found to be peak of distribution 
+
+            elif self.star_psf.psf_profile == 'gaussian':
+                thisoptParams = [popt[1]]#, length, res.x[0],x_source,y_source] #right len for gaussian [stddev#, length, angle, x_source, y_source]
+                newCoef[1] = (popt[0]-offset)/np.cos(np.arctan(newCoef[0]))
+
+            print(newCoef)
+
+            self.streak_coef[i,0] = newCoef[0]
+            self.streak_coef[i,1] = newCoef[1]
+            self.optParams.append(thisoptParams)
+            self.streak_widths.append(popt[1])
+        print("opt coefs:", self.streak_coef)
+        # kill
+
+
 
     def __detection_funcs(self,threshold:float):
         """
@@ -850,11 +1171,22 @@ class sat_killer():
             self._match_lines(close=5,minlines=0)            
             self._match_lines(close=60,minlines=1)
         if len(self.streak_coef) > 0:           
-            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False)            
+            self.scan_for_parallel_streaks(interestWidth=100, peakWidth=5, diagnosing=False, plotting=False, saving=False)  
+            
+            # print(f"after scan {self.streak_coef}")          
             self.__lc_variation_test(variation_frac=0.3) #* trial with higher frac was sucessful
             #* now consistent. No extra _tpl combined quicklooks without the same streak in a _pst single cube one
+            # print(f"after variation{self.streak_coef}") 
             self.__lc_stars_vetting()  #! would throw out sats 
-             #*Had to change this to
+            # #*Had to change this too
+            # print(f"after vetting {self.streak_coef}") 
+
+            self.opt_streak_params()
+
+            self._find_center() #! need to go here to update satcat after the vetting
+
+            # kill
+
             if len(self.streak_coef) > 0:
                 self.make_mask()
                 self.plot_lines()
@@ -884,6 +1216,7 @@ class sat_killer():
             Nothing
         """
         self.image = image
+        self.unaltered_image = image
         self.savename = savename
         self.__detection_funcs(threshold)
         if (threshold < 10) & (self.sat_num == 0):
@@ -952,6 +1285,3 @@ class sat_killer():
             save = np.array([self.wavelength,self.sat_fluxes[i]]).T
             # np.save(savepath + f'sat_{i+1}.png',save) #* Doesn't need the .png on the end
             np.save(savepath + f'sat_{i+1}',save) 
-
-
-

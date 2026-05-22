@@ -206,6 +206,11 @@ class create_psf():
         #normalized flux profile return 1.-(1.+(rad/self.alpha)**2)**(1.-self.beta)
         a2=self.alpha*self.alpha
         return (self.beta-1)/(np.pi*a2)*(1.+(rad/self.alpha)**2)**(-self.beta)
+    
+    # def moffat_sat(self, rad):
+    #     #normalized flux profile return 1.-(1.+(rad/self.alpha)**2)**(1.-self.beta)
+    #     a2=self.alpha*self.alpha
+    #     return self.amp*(1.+(rad/self.alpha)**2)**(-self.beta)
 
     def gauss2d(self,x,y):
         """
@@ -323,24 +328,24 @@ class create_psf():
             self.angle = coeff[3]
             self.source_x = coeff[4]
             self.source_y = coeff[5]
-            #floor = coeff[6]
+            floor = coeff[6]
         elif 'gaussian' in self.psf_profile:
             self.stddev = coeff[0]
             self.length = coeff[1]
             self.angle = coeff[2]
             self.source_x = coeff[3]
             self.source_y = coeff[4]
-            #floor = coeff[5]
+            floor = coeff[5]
         self.generate_line_psf(shiftx = self.source_x, shifty = self.source_y)
         psf = self.longpsf / np.nansum(self.longpsf) # type: ignore
         
-        diff = abs(image - psf)
+        diff = abs(image - (psf + floor)) #// *add floor
         residual = np.nansum(diff)
         #self.residual = residual
         return np.exp(residual)
 
 
-    def fit_psf(self,image,limx=10,limy=10):
+    def fit_psf(self,image,limx=10,limy=10):  #TODO add stars T/F param
         """
         Fit a PSF profile to the input image.
 
@@ -357,16 +362,21 @@ class create_psf():
 
         image -= np.nanmedian(image)
         normimage = image / np.nansum(image)
-        anglebs = [self.angle_o*0.6,self.angle_o*1.4]
+        # anglebs = [self.angle_o*0.6,self.angle_o*1.4] #* Stars might want this
+        # anglebs = [self.angle+np.radians(5), self.angle-np.radians(5)] #! This self.angle is actually in degrees!!! So this is a very tight bound. 
+        anglebs = [self.angle+2, self.angle-2] #* slightly smaller bound than 5 degrees, but might be enough to fix angle issues. 
 
         if self.psf_profile == 'moffat':
-            coeff = [self.alpha,self.beta,self.length,self.angle,0,0]
+            coeff = [self.alpha,self.beta,self.length,self.angle,0,0, 0]
             lims = [[0.1,100],[1,100],[self.length_o*0.5,self.length_o*1.5],
-                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy]]
+                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
         elif self.psf_profile == 'gaussian':
-            coeff = [self.stddev,self.length,self.angle,0,0]
-            lims = [[0.1,20],[self.length_o*0.6,self.length_o*1.4],
-                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy]]
+            coeff = [self.stddev,self.length,self.angle,0,0,0]
+            # lims = [[0.1,5],[self.length_o*0.6,self.length_o*1.4],
+            #         [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
+            lims = [[1,5], #* up the min psf width.  
+                    [self.length_o*0.6,self.length_o*1.4], 
+                    [np.min(anglebs),np.max(anglebs)],[-limx,limx],[-limy,limy], (-np.inf, np.inf)]
         else:
             m = 'Incorrect psf_profile, please select from moffat or gaussian.'
             raise ValueError(m)
@@ -375,6 +385,34 @@ class create_psf():
         res = minimize(self.minimizer, coeff, args=normimage, method='Powell',bounds=lims)
                         #jac = '2-point',options={'finite_diff_rel_step':0.1})
         self.psf_fit = res
+
+    def sat_psf_from_opt_params(self, optParams):
+        """optParams should be the right lenght for the psf profile chosen"""
+        if self.psf_profile == 'moffat': #beta index
+            self.alpha = optParams[0]
+            self.beta = optParams[1]
+            # self.length = optParams[2]
+            # self.angle = optParams[3]
+            # self.source_x = optParams[4]
+            # self.source_y = optParams[5]
+            self.generate_line_psf()
+        elif self.psf_profile == 'gaussian':
+            self.stddev = optParams[0]
+            # self.length = optParams[1]
+            # self.angle = optParams[2]
+            # self.source_x = optParams[3]
+            # self.source_y = optParams[4]
+            self.generate_line_psf()
+        # elif self.psf_profile == 'moffat_sat':
+        #     self.alpha = optParams[0]
+        #     self.beta = optParams[1]
+        #     self.amp = optParams[2]
+        #     # self.length = optParams[2]
+        #     # self.angle = optParams[3]
+        #     # self.source_x = optParams[4]
+        #     # self.source_y = optParams[5]
+        #     self.generate_line_psf()
+
 
     def make_data_psf(self,data_cuts):
         """

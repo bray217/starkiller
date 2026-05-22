@@ -1450,63 +1450,6 @@ def bin_spec(spec,bin_factor=100):
     
     return s
         
-#(ble) Adding false colour functions
-
-from AstroColour.AstroColour import RGB
-
-def make_false_colour(cube, savePath:str, saveName:str, scaleNorm:str="linear"):
-    """
-    Using AstroColour by zgl12 to false colour a cube. 
-    
-    Parameters
-    ----------
-        cube: starkiller.cube
-
-        savePath:str, required
-            The path to save the image to
-        saveName:str, required
-            The name of the image (without a file extension)
-        scaleNorm: str, optional
-            The Norm to scale the images by, default "Linear". Other options include "log", "sinh", "asinh"
-    
-    Returns
-    -------
-        colour: ndarray
-            the scaled slices of the cube that can then be used for reploting
-    """
-    thirds = int(cube[0]/3)
-
-    blueCube = cube[:thirds,:,:] 
-    greenCube = cube[thirds:2*thirds,:,:] 
-    redCube = cube[2*thirds:,:,:] 
-
-    blueIm = np.nansum(blueCube, axis=0)
-    greenIm = np.nansum(greenCube, axis=0)
-    redIm = np.nansum(redCube, axis=0)
-
-    imList = [redIm, greenIm,blueIm]
-
-    rgb = RGB(
-        imList,
-        colours=['red', 'green', 'blue'],
-        intensities=[0.55, 1, 0.6],
-        uppers=[99, 99, 99],
-        lowers=[60, 50, 50],
-        save=True,
-        save_name=saveName,
-        save_folder=savePath,
-        gamma=1.5,
-        norm=scaleNorm,
-        min_separation=29,
-        star_size=5,
-        epsf_plot=False,
-        epsf=False,
-        manual_override=20
-    )
-    colour = rgb.plot()
-    return colour
-
-
 # Functions for PS1
 
 def isolate_stars(cat,only_stars=False,Qf_lim=0.85,psfkron_diff=0.05):
@@ -1553,95 +1496,6 @@ def query_ps1(ra,dec,radius=5/60,only_stars=False,ref_filt='r',maglim=25,catvers
     cat = cat.sort_values(ref_filt)
 
     return cat 
-
-
-
-
-def make_false_colour_Sloan(cube, lambdas, savePath:str, saveName:str, scaleNorm:str="linear"):
-    """
-    Using AstroColour by zgl12 to false colour a cube. Using the SDSS filter cuts 
-    
-    Parameters
-    ----------
-
-        cube: starkiller.cube, required
-
-        lambdas: starkiller.lam, required
-
-        savePath:str, required
-            The path to save the image to
-        saveName:str, required
-            The name of the image (without a file extension)
-        scaleNorm: str, optional
-            The Norm to scale the images by, default "linear". Other options include "log", "sinh", "asinh"
-    
-    Returns
-    -------
-
-        colour: ndarray
-            the scaled slices of the cube that can then be used for reploting
-    """
-
-    #*SDSS bands
-    gmin = 3797.64	
-    gmax = 5553.04
-    rmin = 5418.23 
-    rmax=	6994.42
-    imin = 6692.41  
-    imax=8400.32
-    zmin = 7964.70
-
-    gIDs = np.where((lambdas>gmin) & (lambdas<gmax))
-
-    rIDs = np.where((lambdas>rmin) & (lambdas<rmax))
-
-    iIDs = np.where((lambdas>imin) & (lambdas<imax))
-
-    zIDs = np.where((lambdas>zmin))
-
-
-    gCube = cube[gIDs[0],:,:] 
-    rCube = cube[rIDs[0],:,:] 
-    iCube = cube[iIDs[0],:,:] 
-    zCube = cube[zIDs[0],:,:] 
-
-    gRange = gmax-lambdas[0] #Only get those in datacube
-    rRange = rmax-rmin
-    iRange = imax-imin
-    zRange = lambdas[-1] - zmin #only get those in datacube
-
-    gIm = np.nansum(gCube, axis=0)
-    rIm = np.nansum(rCube, axis=0)
-    iIm = np.nansum(iCube, axis=0)
-    zIm = np.nansum(zCube, axis=0)
-
-    gIm = gIm/gRange
-    rIm = rIm/rRange
-    iIm = iIm/iRange
-    zIm = zIm/zRange
-
-    imList = [zIm,iIm,rIm,gIm]
-
-    rgb = RGB(
-        imList,
-        colours=['red',"yellow",'green','blue'],
-        intensities=[0.6,0.4, 0.55, 0.55],
-        uppers=[99,99, 99, 99],
-        lowers=[50,50, 50, 50],
-        save=False,
-        save_name=saveName,
-        save_folder=savePath,
-        gamma=1.5,
-        norm='linear',
-        min_separation=29,
-        star_size=5,
-        epsf_plot=False,
-        epsf=False,
-        manual_override=20
-    )
-    colour = rgb.plot()
-
-    return colour
 
 
 #(ble) Adding backgroud stats functions
@@ -1812,8 +1666,21 @@ def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=F
     satIm = _make_unscaled_image(cube)
     diffIm = _make_unscaled_image(diffCube)
 
-    #turns seed into mask
-    satMask = _seed_to_mask(seed)
+    
+    
+    #turns seed into mask, lower bound was not low enough sometimes. 
+    count = 0 
+    while count <= 6: #if 1e-10 doesn't work, something else is wrong
+        
+        lb = 10**(-( 4 + count)) #  dynamic mask range
+        satMask = _seed_to_mask(seed, lowerBound=lb)
+
+        if np.sum(satMask) == 0: #all are False. 
+            count +=1
+        else:
+            count = 10
+
+
 
     means, meds, stds, plusMask, minusMask = _frame_stats(satIm, satMask, slope, shift, returnOffsetMasks=True) #runs on image
 
@@ -1850,7 +1717,7 @@ def image_level_stats(cube, diffCube, seed, slope, shift:int=10, plotting:bool=F
 
         ax.plot(xs, sat_bright, label = "Sat")
         ax.plot(xs, plus_bright , label = "+")
-        ax.plot(xs, minus_bright, label = "-")
+        ax.plot(xs, minus_bright, label = "-", c="C5")
         ax.plot(xs, sub_bright, label = "Sub")
 
         maskSum = np.nansum(satMask, axis=0)
@@ -2033,6 +1900,11 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
         medLim = np.nanmax([np.abs(np.abs(np.nanmedian(streakWaveMeds)) +np.abs(3*np.nanstd(streakWaveMeds))),np.abs(np.abs(np.nanmedian(diffSubWaveMeds)) +np.abs(3*np.nanstd(diffSubWaveMeds)))])
         stdLim = np.nanmax([np.abs(np.abs(np.nanmean(streakWaveStds)) +np.abs(3*np.nanstd(streakWaveStds))),np.abs(np.abs(np.nanmean(diffSubWaveStds)) +np.abs(3*np.nanstd(diffSubWaveStds)))])
 
+        if ~np.isfinite(meanLim): #! Somehow they can still be nan or inf. IDK how but I need to stop it from erroring
+            meanLim=10
+            medLim = 10
+            stdLim = 10
+
         ax[0].set(ylim = (-meanLim,meanLim),xlim=plotxLim, ylabel = "Means")
         ax[1].set(ylim = (-medLim, medLim), ylabel = "Medians")
         ax[2].set(ylim = (0,stdLim), ylabel = "Stds", xlabel=f"Wavelength ($\AA$)")
@@ -2055,12 +1927,12 @@ def wavelength_stats(cube, diffCube, lams, seed, slope, shift:int=10, plotting:b
             ax[2].plot(lams, diffPlusWaveStds, ls="--")
                 
         if plotMinus:
-            ax[0].plot(lams, minusWaveMeans, label="-, Image")
-            ax[0].plot(lams, diffMinusWaveMeans, ls="--", label="-, Difference Image")
-            ax[1].plot(lams, minusWaveMeds)
-            ax[1].plot(lams, diffMinusWaveMeds, ls="--")
-            ax[2].plot(lams, minusWaveStds)
-            ax[2].plot(lams, diffMinusWaveStds, ls="--")
+            ax[0].plot(lams, minusWaveMeans, label="-, Image", c="C5")
+            ax[0].plot(lams, diffMinusWaveMeans, ls="--", label="-, Difference Image", c="C6")
+            ax[1].plot(lams, minusWaveMeds, c="C5")
+            ax[1].plot(lams, diffMinusWaveMeds, ls="--", c="C6")
+            ax[2].plot(lams, minusWaveStds, c="C5")
+            ax[2].plot(lams, diffMinusWaveStds, ls="--", c="C6")
         
         ax[0].legend()
 
