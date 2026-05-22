@@ -1,3 +1,11 @@
+"""
+Trail PSF modelling for moving sources.
+
+Provides the ``create_psf`` class, which builds and fits a trailed
+point-spread function (Gaussian or Moffat profile convolved with a
+motion line) suitable for both sidereal and non-sidereal tracked
+exposures.  Also exposes the ``downSample2d`` helper.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize, least_squares

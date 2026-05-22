@@ -1,3 +1,11 @@
+"""
+Satellite streak detection and spectral extraction for IFU datacubes.
+
+Provides the ``sat_killer`` class, which identifies satellite trails in a
+median-collapsed image of a datacube using morphological dilation, Canny edge
+detection, and a Hough transform.  Detected streaks are validated, modelled
+with a satellite PSF, and their spectra extracted along the trail.
+"""
 import numpy as np
 import cv2
 from copy import deepcopy
@@ -15,6 +23,38 @@ from scipy.signal import find_peaks
 class sat_killer():
     def __init__(self,cube,psf,wavelength=None,sat_thickness=17,sat_sigma=3.0,
                  savename=None,y_close=5,angle_close=2,dist_close=10,num_cores=5,run=True):
+        """
+        Initialise the satellite detection pipeline and optionally run it immediately.
+
+        Parameters
+        ----------
+        cube : array-like
+            3-D spectral datacube (wavelength, y, x) to search for satellite streaks.
+        psf : psf class
+            PSF class instance containing the PSF fit to the datacube.
+        wavelength : array-like, optional
+            Wavelength array corresponding to the spectral axis of the cube.
+            If None, integer indices are used.
+        sat_thickness : int, optional
+            Pixel thickness used when drawing the satellite mask. Default is 17.
+        sat_sigma : float, optional
+            Number of sigma above the image mean used as the detection threshold.
+            Default is 3.0.
+        savename : str or None, optional
+            Base path for saving diagnostic plots.  If None, plots are saved to
+            the current directory. Default is None.
+        y_close : int, optional
+            Proximity in y (pixels) used when matching candidate lines. Default is 5.
+        angle_close : int, optional
+            Angular proximity (degrees) used when matching candidate lines. Default is 2.
+        dist_close : int, optional
+            Distance proximity (pixels) used when matching candidate lines. Default is 10.
+        num_cores : int, optional
+            Number of parallel cores used for spectral fitting. Default is 5.
+        run : bool, optional
+            If True, the full detection pipeline runs automatically on construction.
+            Default is True.
+        """
         self.cube = cube
         self.star_psf = psf
         self.thickness = sat_thickness #TODO ble thinks this should be dynamically set. Maybe with the PSF thickness
@@ -110,6 +150,7 @@ class sat_killer():
 
     
     def _set_threshold(self,sigma):
+        """Set ``self.threshold`` to the sigma-clipped image mean plus ``sigma`` times the standard deviation."""
         mean, med, std = sigma_clipped_stats(self.image)
         self.threshold = mean + sigma*std  #! This can easily be > max of image
         #! with default sat_sigma = 10, a std of ~20 can blow past the 255 upper bound with a modest mean around 50.
@@ -118,6 +159,7 @@ class sat_killer():
         #* Have changed default sat_sigma to 3.0, and added it as a optional input to starkiller as well 
 
     def _detected(self):
+        """Set ``self.satellite`` and ``self.sat_num`` based on whether any streaks were found in ``self.streak_coef``."""
         if len(self.streak_coef) > 0:
             self.satellite = True
         else:
@@ -125,6 +167,7 @@ class sat_killer():
         self.sat_num = len(self.streak_coef)
 
     def _dilate(self):
+        """Threshold ``self.image``, morphologically dilate the result, and store an 8-bit binary image in ``self.gray``."""
         # set all values below the threshold to zero
         arr = deepcopy(self.image)
         arr[arr < self.threshold] = 0
@@ -142,11 +185,13 @@ class sat_killer():
         self.gray = (d*255/np.max(d)).astype('uint8')
         
     def _edges(self):
+        """Apply Canny edge detection to ``self.gray`` and store the result in ``self.edges``."""
         low_threshold = 50
         high_threshold = 150
         self.edges = cv2.Canny(self.gray, low_threshold, high_threshold)
 
     def _lines(self):
+        """Run a probabilistic Hough transform on ``self.edges`` and store detected line segments and their polynomial coefficients in ``self.lines`` and ``self.streak_coef``."""
         lines = cv2.HoughLinesP(self.edges, # Input edge image
                                 1, # Distance resolution in pixels
                                 np.pi/180, # Angle resolution in radians
@@ -178,6 +223,7 @@ class sat_killer():
             self.lines = []
     
     def _match_lines(self,close=30,minlines=1):
+        """Merge candidate streak coefficients that lie within ``close`` pixels of each other and update ``self.streak_coef``."""
         x = np.arange(0,self.image.shape[1],0.5)
         yy = []
         for c in self.streak_coef:
@@ -346,6 +392,13 @@ class sat_killer():
 
 
     def plot_lines(self):
+        """
+        Overlay detected streak trajectories on the quicklook image.
+
+        Each streak stored in ``self.streak_coef`` is drawn as a dashed coloured
+        line on a greyscale rendering of ``self.image``.  A legend labels each
+        streak as 'Sat N'.
+        """
         plt.figure()
         plt.imshow(self.image,origin='lower',cmap='gray',vmin=np.nanpercentile(self.image,16),vmax=np.nanpercentile(self.image,95))
         #for line in self.lines:
@@ -388,6 +441,19 @@ class sat_killer():
         
     
     def make_mask(self,thickness=None):
+        """
+        Build a binary pixel mask for each detected satellite streak.
+
+        A thick line is drawn along each trajectory in ``self.streak_coef`` and
+        the per-streak binary masks are stored in ``self.mask``.  The union of
+        all masks is stored in ``self.total_mask``.
+
+        Parameters
+        ----------
+        thickness : int or None, optional
+            Width in pixels of the mask line drawn over each streak.  If None,
+            ``self.thickness`` is used. Default is None.
+        """
         if thickness is None:
             thickness = self.thickness
         # create a black image with the same size as the input image
@@ -418,6 +484,15 @@ class sat_killer():
         self.total_mask = tmp.astype(int)
         
     def make_satellite_psf(self):
+        """
+        Construct a trail PSF for each detected satellite streak.
+
+        For every streak in ``self.streak_coef`` a PSF is created whose length,
+        angle, and width are derived from the corresponding entry in
+        ``self.cut_dims``, ``self.angles``, and ``self.lengths``, using the
+        profile type (Gaussian or Moffat) and parameters from ``self.star_psf``.
+        The resulting PSF objects are stored in ``self.sat_psfs``.
+        """
         self.sat_psfs = []
         for i in range(self.sat_num):
             if 'gaussian' in self.star_psf.psf_profile:
@@ -436,6 +511,7 @@ class sat_killer():
             
             
     def _fit_spec(self):
+        """Fit the satellite PSF to each wavelength slice of the datacube and store the resulting flux spectra in ``self.sat_fluxes``."""
         sat_fluxes = []
         self.satcat['x'] = 0; self.satcat['y'] = 0
         self.satcat['xoff'] = 0; self.satcat['yoff'] = 0;
@@ -456,7 +532,22 @@ class sat_killer():
         self.sat_fluxes = np.array(sat_fluxes) #* 1e-20
 
     def spatial_specs(self,spacing=2,plot=True):
+        """
+        Extract spatially resolved spectra along each detected satellite streak.
 
+        Sample points are placed along each streak trajectory at intervals of
+        ``spacing`` times the PSF FWHM.  A spectrum is fitted at each sample
+        point and the results are stored as DataFrames in ``self.spatial_specs``.
+
+        Parameters
+        ----------
+        spacing : float, optional
+            Separation between sample points along the streak, in units of the
+            PSF FWHM. Default is 2.
+        plot : bool, optional
+            If True, call ``self.plot_spatial_specs()`` after extraction to
+            produce a diagnostic figure. Default is True.
+        """
         if 'gaussian' in self.star_psf.psf_profile:
             fwhm = 2.355 * self.star_psf.stddev
             width = int(fwhm*2)
@@ -802,6 +893,19 @@ class sat_killer():
 
 
     def plot_spatial_specs(self,bin_size=1):
+        """
+        Plot spatially resolved spectra extracted along each satellite streak.
+
+        For each streak, a two-panel figure is produced: the left panel shows
+        the sample-point positions overlaid on the quicklook image; the right
+        panel shows the normalised spectra offset vertically by position.  The
+        figure is saved to ``satellite_trail.png`` in the current directory.
+
+        Parameters
+        ----------
+        bin_size : int, optional
+            Number of wavelength channels to bin before plotting. Default is 1.
+        """
         for linecat in self.spatial_specs:
             cmap = plt.get_cmap('viridis')
             norm = plt.Normalize(0, len(linecat))
@@ -831,6 +935,19 @@ class sat_killer():
 
 
     def save_specs(self,savepath='.',spatial=False):
+        """
+        Save the extracted satellite spectra to disk as NumPy ``.npy`` files.
+
+        Each spectrum is saved as a two-column array of (wavelength, flux) to
+        ``<savepath>/sat_N.npy``, where N is the one-based satellite index.
+
+        Parameters
+        ----------
+        savepath : str, optional
+            Directory to save the spectrum files. Default is ``'.'``.
+        spatial : bool, optional
+            Reserved for future use; currently unused. Default is False.
+        """
         for i in range(len(self.sat_fluxes)):
             save = np.array([self.wavelength,self.sat_fluxes[i]]).T
             # np.save(savepath + f'sat_{i+1}.png',save) #* Doesn't need the .png on the end

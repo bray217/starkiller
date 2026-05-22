@@ -5,6 +5,23 @@ import pandas as pd
 
 
 def downSample2d(arr,sf):
+    """
+    Downsample a 2-D array by summing non-overlapping blocks of size ``sf x sf``.
+
+    Parameters
+    ----------
+    arr : array-like
+        2-D input array with shape (A, B).  Both A and B must be divisible by
+        ``sf``.
+    sf : int
+        Linear downsampling factor; each output pixel is the sum of an
+        ``sf x sf`` block of input pixels.
+
+    Returns
+    -------
+    numpy.ndarray
+        2-D array with shape (A // sf, B // sf).
+    """
     #isf2 = 1.0/(sf*sf) # Removed this factor since we don't want scaling
     (A,B) = arr.shape
     windows = view_as_windows(arr, (sf,sf), step = sf)
@@ -145,6 +162,7 @@ class cube_simulator():
         self.all_psfs = np.nansum(self.seeds,axis=0)
 
     def _create_satellite_seeds(self):
+        """Create supersampled PSF seed images for each satellite streak and store them in ``self.satellite_seeds``, updating ``self.all_psfs``."""
         seeds = []
         x = self.satellite.satcat.x.values
         y = self.satellite.satcat.y.values

@@ -1,4 +1,10 @@
-import pandas as pd 
+"""
+Utility functions for the starkiller pipeline, including source catalogue queries,
+coordinate transformations, PSF-based spectral extraction, spectral smoothing and
+binning, stellar model matching with extinction fitting, redshift estimation, and
+image background estimation.
+"""
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -76,6 +82,7 @@ def get_gaia_region(ra,dec,size=0.4, magnitude_limit = 21):
     return result
 
 def _get_skymapper(ra,dec,rad = 0.4,magnitude_limit=25,star_lim=0.8):
+    """Query the SkyMapper cone-search service and return a cleaned source catalogue."""
     query = f'https://skymapper.anu.edu.au/sm-cone/public/query?RA={ra}&DEC={dec}&SR={rad}&RESPONSEFORMAT=CSV'
     sm = pd.read_csv(query)
     if len(sm) > 0:
@@ -237,11 +244,11 @@ def transform_coords(x,y,param,image):
     yy : numpy ndarray
         new y positions 
     """
-    xx = x + param[0]
-    yy = y + param[1]
+    sx = x + param[0]
+    sy = y + param[1]
     cx = image.shape[1]/2; cy = image.shape[0]/2
-    xx = cx + ((xx-cx)*np.cos(param[2])-(yy-cy)*np.sin(param[2]))
-    yy = cy + ((xx-cx)*np.sin(param[2])+(yy-cy)*np.cos(param[2]))
+    xx = cx + ((sx-cx)*np.cos(param[2])-(sy-cy)*np.sin(param[2]))
+    yy = cy + ((sx-cx)*np.sin(param[2])+(sy-cy)*np.cos(param[2]))
     ind = (xx > 0) & (xx < image.shape[1]) & (yy > 0) & (yy < image.shape[0])
     #xx = xx[ind]; yy = yy[ind]
     return xx, yy
@@ -334,7 +341,25 @@ def replace_cut(x_length,y_length,image,cuts,cat):
 
 def replace_cube(cube,cut,x_length,y_length,cat):
     """
-    Not used
+    Replace source cutouts back into every wavelength slice of a data cube.
+
+    Parameters
+    ----------
+    cube : numpy ndarray
+        3-D data cube of shape (n_wavelengths, ny, nx).
+    cut : numpy ndarray
+        Array of replacement cutouts with shape (n_wavelengths, ny_cut, nx_cut).
+    x_length : int
+        Half-width of the cutout in the x dimension.
+    y_length : int
+        Half-height of the cutout in the y dimension.
+    cat : pandas DataFrame
+        Source catalogue containing pixel coordinates of sources.
+
+    Returns
+    -------
+    replace : numpy ndarray
+        Data cube with the cutouts inserted at the source positions.
     """
     replace = deepcopy(cube)
     for i in range(len(cube)):
@@ -344,27 +369,32 @@ def replace_cube(cube,cut,x_length,y_length,cat):
 
 def psf_spec(cube,psf,data_psf=None,fitpos=True,pos_bound=None):
     """
-    Create a PSF and fit it to the input cube. Then calculate the flux of the source in the image.
+    Fit a PSF model to each wavelength slice of a cube and extract the source flux.
 
     Parameters
     ----------
     cube : numpy ndarray
-        Image to calculate the flux of.
-    psf_param : numpy ndarray
-        Parameters used to create the PSF. [0] is the FWHM; [1] is the length of the PSF; [2] is the angle of the PSF.
-    data_psf : numpy ndarray
-        PSF to use in the fitting process. The default is None, which means a PSF will be created from the input image.
+        3-D data cube of shape (n_wavelengths, ny, nx) to extract flux from.
+    psf : trail_psf.create_psf
+        PSF object used to model and fit the source.
+    data_psf : numpy ndarray, optional
+        External PSF image to use in fitting. The default is None.
+    fitpos : bool, optional
+        If True, fit the source position before extracting flux. The default is True.
+    pos_bound : float, optional
+        Search radius in pixels for the position fit. If None, the radius is
+        derived automatically from the PSF trail length.
 
     Returns
     -------
-    flux : float
-        Flux of the source in the image.
+    flux : numpy ndarray
+        Per-wavelength flux of the source.
     residual : numpy ndarray
-        Residual of the PSF fit to the image.
+        Per-wavelength residual images from the PSF fit.
     xoff : float
-        X offset of the source from the PSF fit.
+        Median x offset of the source from the PSF fit.
     yoff : float
-        Y offset of the source from the PSF fit.
+        Median y offset of the source from the PSF fit.
     """
     #if data_psf is None:
     #   psf_tuning = '' 
@@ -417,7 +447,24 @@ def psf_spec(cube,psf,data_psf=None,fitpos=True,pos_bound=None):
 
 def cube_cutout(cube,cat,x_length,y_length):
     """
-    Create cutouts of sources from the input cube.
+    Extract per-source cutout sub-cubes from a data cube.
+
+    Parameters
+    ----------
+    cube : numpy ndarray
+        3-D data cube of shape (n_wavelengths, ny, nx).
+    cat : pandas DataFrame
+        Source catalogue containing pixel coordinates of sources.
+    x_length : int
+        Half-width of each cutout in the x dimension.
+    y_length : int
+        Half-height of each cutout in the y dimension.
+
+    Returns
+    -------
+    cuts : numpy ndarray
+        Array of shape (n_sources, n_wavelengths, 2*y_length+1, 2*x_length+1)
+        containing the cutout sub-cubes for each source.
     """
     cuts = []
     for i in range(len(cube)):
@@ -430,35 +477,37 @@ def cube_cutout(cube,cat,x_length,y_length):
 
 def get_specs(cat,cube,x_length,y_length,psf,lam,num_cores,data_psf=None,fitpos=True):
     """
-    Get the spectra of sources in the input cube.
+    Extract PSF-fitted spectra for all sources in the catalogue from a data cube.
 
     Parameters
     ----------
     cat : pandas DataFrame
-        Catalog of sources containing their coordinates.
+        Catalogue of sources containing their pixel coordinates.
     cube : numpy ndarray
-        Input image containing the sources.
+        3-D data cube of shape (n_wavelengths, ny, nx).
     x_length : int
-        Length of the x dimension of the cutout
+        Half-width of each source cutout in the x dimension.
     y_length : int
-        Length of the y dimension of the cutout 
-    psf_params : numpy ndarray
-        Parameters used to create the PSF. [0] is the FWHM; [1] is the length of the PSF; [2] is the angle of the PSF.
+        Half-height of each source cutout in the y dimension.
+    psf : trail_psf.create_psf
+        PSF object used to model and fit each source.
     lam : numpy ndarray
-        Wavelength array of the input cube.
+        Wavelength array corresponding to the cube slices.
     num_cores : int
-        Number of cores to use in the fitting process.
-    data_psf : numpy ndarray
-        PSF to use in the fitting process. The default is None, which means a PSF will be created from the input image.
+        Number of parallel worker processes to use.
+    data_psf : numpy ndarray, optional
+        External PSF image for fitting. The default is None.
+    fitpos : bool, optional
+        If True, fit the source position before extracting flux. The default is True.
 
     Returns
     -------
     specs : list
-        List of spectra for each source in the input catalog.
+        List of pysynphot ArraySpectrum objects, one per source.
     residual : numpy ndarray
-        Residual of the PSF fit to the image.
+        Per-wavelength residual images from the PSF fits.
     cat : pandas DataFrame
-        Catalog of sources containing their coordinates and offsets from the PSF fit.
+        Source catalogue updated with fitted x/y offsets.
     """
     cuts = cube_cutout(cube,cat,x_length,y_length)
     ind = np.arange(0,len(cuts)+1)
@@ -548,6 +597,7 @@ def psf_spec2(cube,psf,data_psf=None):
     return flux,residual, xoff, yoff
 
 def _smooth_spec(spec,sigma=10,repeats=3,smooth_bin=51):
+    """Iteratively mask sharp spectral features and return a Savitzky-Golay smoothed spectrum."""
     flux = deepcopy(spec.flux)
     y = deepcopy(spec.flux)
     med = np.nanmedian(y)
@@ -684,23 +734,33 @@ def _compare_catalog(model_files,lam,flux):
 
 def match_spec_to_model(specs,mags,pbs,catalog='ck+',num_cores=-1):
     """
-    Match an input spectrum to a model spectrum.
+    Match a set of observed spectra to the best-fitting stellar model spectra.
 
     Parameters
     ----------
-    spec : pysynphot.spectrum.ArraySpectrum
-        Input spectrum
-    catalog : str
-        Name of the model catalog to compare to. The default is 'ck+'.
+    specs : list or numpy ndarray
+        Observed spectra as pysynphot ArraySpectrum objects.
+    mags : numpy ndarray
+        Catalogue magnitudes used to normalise the model spectra.
+    pbs : dict
+        Photometric bandpass objects keyed by filter name, used for normalisation.
+    catalog : str, optional
+        Model spectral catalogue to search. Supported values are ``'ck+'``
+        (Castelli-Kurucz with MARCS and OB-star extensions) and ``'eso'``.
+        The default is ``'ck+'``.
+    num_cores : int, optional
+        Number of parallel worker processes to use. The default is -1 (all cores).
 
     Returns
     -------
-    model : pysynphot.spectrum.ArraySpectrum
-        Best fitting model spectrum.
-    cor : float
-        Correlation coefficient of the best fitting model spectrum.
-    redshift : float
-        Redshift of the input spectrum.
+    models : numpy ndarray
+        Best-fitting normalised model spectra, one per input spectrum.
+    cor : numpy ndarray
+        Pearson correlation coefficients for each best-fitting model.
+    redshift : list
+        Estimated redshift for each observed spectrum.
+    ebvs : numpy ndarray
+        Best-fitting E(B-V) extinction values for each model.
     """
     specs = np.array(specs)
     #lam = spec.wave
@@ -1002,9 +1062,11 @@ def lam_vac2air(lam):
     return air
 
 def _has_len(obj):
+    """Return True if obj has a ``__len__`` attribute, False otherwise."""
     return hasattr(obj, '__len__')
 
 def _create_model_grid(model,e,Rv=3.1):
+    """Apply a single E(B-V) extinction value to a model spectrum and return the median-normalised result."""
     ext = S.ArraySpectrum(model.wave, 
                         apply(fitzpatrick99(model.wave.astype('double'),e*Rv,Rv),
                               model.flux),name=model.name + ' ebv=' + str(e))
@@ -1014,6 +1076,7 @@ def _create_model_grid(model,e,Rv=3.1):
 
 
 def _model_grid(model_file,target_lam=None,max_ext=4,num_cores=1):
+    """Load a model spectrum from file and build a grid of extinction-reddened, normalised versions."""
     extinctions = np.arange(0,max_ext,0.01)
     extinctions = np.round(extinctions,3)
     name = model_file.split('/')[-1].split('.dat')[0]
@@ -1034,6 +1097,7 @@ def _model_grid(model_file,target_lam=None,max_ext=4,num_cores=1):
     return exts
 
 def _calc_cor(spec,model_fluxes,num_cores=-1):
+    """Compute Pearson correlation coefficients between a spectrum and each row of a model flux array."""
     finite = np.isfinite(spec.flux)
     coeff = np.array([pearsonr(spec.flux[finite],m[finite])[0] for m in model_fluxes])
     coeff[coeff<0] = 0
@@ -1041,18 +1105,49 @@ def _calc_cor(spec,model_fluxes,num_cores=-1):
     return coeff#[:,0]
 
 def _refactoring(model):
+    """Extract the flux array and E(B-V) value from a named model spectrum object."""
     flux = model.flux
     ext = float(model.name.split('=')[-1])
     return flux, ext
 
 
 def _parallel_match(spec,model_flux):
+    """Find the best-matching model by maximum Pearson correlation and return the correlation and index."""
     cors = _calc_cor(spec,model_flux)
     ind = np.argmax(cors)
     cor = cors[ind]
     return cor, ind 
 
 def _match_obs_to_model(obs_spec,model_files,mags,pbs,num_cores=-1):
+    """
+    Match observed spectra to the best-fitting model from a list of model files.
+
+    Builds an extinction grid for every model file, finds the best match for each
+    observed spectrum by Pearson correlation, then normalises the matched model to
+    the observed photometry.
+
+    Parameters
+    ----------
+    obs_spec : list or pysynphot.spectrum.ArraySpectrum
+        One or more observed spectra to match.
+    model_files : list
+        Paths to the model spectrum files to search.
+    mags : numpy ndarray
+        Catalogue magnitudes used to normalise the matched models.
+    pbs : dict
+        Photometric bandpass objects keyed by filter name.
+    num_cores : int, optional
+        Number of parallel worker processes. The default is -1 (all cores).
+
+    Returns
+    -------
+    model_spec : numpy ndarray
+        Best-fitting normalised model spectra, one per observed spectrum.
+    cor : numpy ndarray
+        Pearson correlation coefficient for each best-fitting model.
+    ebv : numpy ndarray
+        Best-fitting E(B-V) extinction value for each model.
+    """
     if not _has_len(obs_spec):
         obs_spec = [obs_spec]
     if not _has_len(mags):
@@ -1190,6 +1285,7 @@ def calc_redshift(spec):
 
 
 def _calc_val(val):
+    """Format a numeric velocity value as a string, replacing a leading minus sign with a LaTeX minus."""
     val = str(int(np.round(val,0)))
     if '-' in val:
         val = r'$-$' + val[1:]
@@ -1293,6 +1389,7 @@ from photutils.background import Background2D, MedianBackground
 
 
 def __bkg_calc(data,box_size,filter_size,sigma_clip,bkg_estimator,mask=None):
+    """Compute a 2-D background map for a single image frame using photutils Background2D."""
     if mask is None:
         bkg = Background2D(data, (box_size,box_size), filter_size=(filter_size,filter_size),
                            sigma_clip=sigma_clip, bkg_estimator=bkg_estimator,fill_value=0.0)
@@ -1303,6 +1400,7 @@ def __bkg_calc(data,box_size,filter_size,sigma_clip,bkg_estimator,mask=None):
     return background
 
 def _calc_bkg(data,mask=None,box_size=6,filter_size=7,num_cores=-1):
+    """Estimate the sky background for a 2-D image or each slice of a 3-D cube using sigma-clipped median boxes."""
     sigma_clip = SigmaClip(sigma=3.0)
     bkg_estimator = MedianBackground()
     background = np.zeros_like(data)
@@ -1316,6 +1414,23 @@ def _calc_bkg(data,mask=None,box_size=6,filter_size=7,num_cores=-1):
 
 
 def bin_spec(spec,bin_factor=100):
+    """
+    Bin a spectrum by summing flux values into wider wavelength bins.
+
+    Parameters
+    ----------
+    spec : pysynphot.spectrum.ArraySpectrum
+        Input spectrum to bin.
+    bin_factor : int, optional
+        Number of original wavelength steps to combine into each output bin.
+        A value of 1 returns the spectrum unchanged. The default is 100.
+
+    Returns
+    -------
+    s : numpy ndarray
+        Array of shape (2, n_bins-1) where row 0 is the binned wavelength grid
+        and row 1 is the summed flux in each bin.
+    """
     wave = spec.wave
     flux = spec.flux
     if bin_factor > 1:

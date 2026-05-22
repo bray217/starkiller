@@ -1,3 +1,11 @@
+"""
+Spectral mangling and synthetic photometry utilities.
+
+Provides functions for mangling model spectra to observed magnitudes,
+computing synthetic fluxes and magnitudes through passbands loaded from
+the SVO Filter Profile Service, and normalising spectra to a target
+magnitude.
+"""
 from astroquery.svo_fps import SvoFps
 import numpy as np
 import pysynphot as S
@@ -12,7 +20,24 @@ package_dir = os.path.dirname(os.path.abspath(__file__)) + '/'
 
 def spec_mangle(spec,mags,pbs,name):
 	"""
-	Mangle model spectra to input magnitudes and filters. Filters must be given as their SVO designation.
+	Mangle a model spectrum to match observed magnitudes through given passbands.
+
+	Parameters
+	----------
+	spec : pysynphot.ArraySpectrum
+		Input model spectrum with ``wave`` and ``flux`` attributes.
+	mags : array-like
+		Target AB magnitudes in each passband.
+	pbs : dict
+		Passband dictionary as returned by :py:func:`load_pbs`, mapping
+		passband name to ``(ArrayBandpass, zeropoint)`` tuples.
+	name : str
+		Name assigned to the output mangled spectrum.
+
+	Returns
+	-------
+	mangled : pysynphot.ArraySpectrum
+		Spectrum with flux rescaled to reproduce ``mags`` in ``pbs``.
 	"""
 	#pbs = load_pbs(svo_bp,0,'AB',SVO=True)
 	mangled = []
@@ -235,6 +260,23 @@ def load_pbs(pbnames, model_mags, model='AB',SVO = False):
 	return pbs
 
 def Syn_mag(pbs,spec):
+    """
+    Compute synthetic magnitudes of a spectrum through a set of passbands.
+
+    Parameters
+    ----------
+    pbs : dict
+        Passband dictionary as returned by :py:func:`load_pbs`, mapping
+        passband name to ``(ArrayBandpass, zeropoint)`` tuples.
+    spec : pysynphot.ArraySpectrum or None
+        Spectrum to synthesise magnitudes for.  If ``None``, all magnitudes
+        are returned as ``NaN``.
+
+    Returns
+    -------
+    mag : dict
+        Dictionary mapping each passband name to its synthetic magnitude.
+    """
     mag = {}
     for pb in pbs:
         if spec is not None:
@@ -246,6 +288,26 @@ def Syn_mag(pbs,spec):
     return mag
 
 def my_norm(Spec,pbs,mag,name=None):
+    """
+    Normalise a spectrum so that its synthetic magnitude in the first passband equals ``mag``.
+
+    Parameters
+    ----------
+    Spec : pysynphot.ArraySpectrum
+        Input spectrum to normalise.
+    pbs : dict
+        Passband dictionary as returned by :py:func:`load_pbs`.  The first
+        key is used as the reference passband.
+    mag : float
+        Target AB magnitude in the reference passband.
+    name : str, optional
+        Name assigned to the output normalised spectrum.
+
+    Returns
+    -------
+    spec : pysynphot.ArraySpectrum
+        Copy of ``Spec`` with flux scaled to match ``mag``.
+    """
     spec = deepcopy(Spec)
     m = Syn_mag(pbs,spec)
     m=m[list(pbs.keys())[0]]

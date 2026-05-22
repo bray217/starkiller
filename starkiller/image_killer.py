@@ -1,3 +1,12 @@
+"""
+Image-based star subtraction pipeline for 2-D astronomical images.
+
+This module provides the ``starkiller_image`` class, which ingests a science
+image together with its WCS, queries the Pan-STARRS catalogue, fits an
+effective PSF, and removes field stars to produce a cleaned residual image.
+A helper function ``affine_positions`` is also provided for refining source
+positions via an affine transformation.
+"""
 from .helpers import *
 import traceback
 import matplotlib.pyplot as plt
@@ -27,6 +36,27 @@ from astropy.stats import sigma_clipped_stats, sigma_clip
 from starkiller.helpers import *
 
 def affine_positions(phot,mask=None):
+	"""
+	Fit an affine transformation between initial and fitted source positions and
+	apply it to correct outlier positions.
+
+	Parameters
+	----------
+	phot : astropy.table.Table
+		Photometry table containing ``x_init``, ``y_init``, ``x_fit``, and
+		``y_fit`` columns (with units).
+	mask : numpy.ndarray, optional
+		Boolean array with the same shape as the image.  When provided, sources
+		landing on ``False`` pixels are excluded from the affine fit in addition
+		to sigma-clipping.
+
+	Returns
+	-------
+	x_final : numpy.ndarray
+		Corrected x pixel positions for all sources.
+	y_final : numpy.ndarray
+		Corrected y pixel positions for all sources.
+	"""
 	from scipy.optimize import least_squares
 	def affine_model(params, x, y):
 		"""Apply affine transform."""
@@ -77,7 +107,72 @@ class starkiller_image():
 				 psf_preference='data',plot=True,run=True,numcores=5,rerun_cal=False,
 				 calc_psf_only=False,fuzzy=True,bkg_sub=True,cal_gr_lims=[-0.5,0.8],
 				 cutout_center=None,cutout_size=None,use_photutils=True,verbose=True):
-		
+		"""
+		Initialise the starkiller_image pipeline and optionally run it immediately.
+
+		Parameters
+		----------
+		image : numpy.ndarray
+			2-D science image array.
+		wcs : astropy.wcs.WCS
+			World coordinate system for the image.
+		ref_filter : str, optional
+			Pan-STARRS filter to use for photometric calibration (default ``'r'``).
+		cal_maglim : list of float, optional
+			``[bright_limit, faint_limit]`` magnitude range for calibration sources
+			(default ``[16, 20]``).
+		model_maglim : float, optional
+			Faint magnitude limit for sources included in the scene model
+			(default ``25``).
+		psf_profile : str, optional
+			Functional form of the PSF model; ``'gaussian'`` or ``'moffat'``
+			(default ``'gaussian'``).
+		wcs_correction : bool, optional
+			Whether to compute and apply a WCS offset correction (default
+			``True``).
+		trail : bool, optional
+			Whether to estimate a satellite-trail angle for the PSF (default
+			``True``).
+		psf_align : bool, optional
+			Whether to apply a fine PSF shift to the catalogue positions
+			(default ``True``).
+		psf_preference : str, optional
+			Which PSF to prefer when both are available; ``'data'`` or
+			``'model'`` (default ``'data'``).
+		plot : bool, optional
+			Whether to generate diagnostic plots during processing (default
+			``True``).
+		run : bool, optional
+			Whether to execute the full pipeline immediately on construction
+			(default ``True``).
+		numcores : int, optional
+			Number of parallel cores to use (default ``5``).
+		rerun_cal : bool, optional
+			Whether to rerun calibration source selection after the first PSF
+			fit (default ``False``).
+		calc_psf_only : bool, optional
+			If ``True``, stop after computing the PSF without performing
+			photometry (default ``False``).
+		fuzzy : bool, optional
+			Whether to detect and mask extended fuzzy sources (default
+			``True``).
+		bkg_sub : bool, optional
+			Whether to subtract a 2-D background before processing (default
+			``True``).
+		cal_gr_lims : list of float, optional
+			``[blue_limit, red_limit]`` colour range in ``g-r`` for selecting
+			calibration stars (default ``[-0.5, 0.8]``).
+		cutout_center : array-like, optional
+			``[row, col]`` centre of a sub-image cutout.  When ``None`` the
+			full image is used (default ``None``).
+		cutout_size : array-like, optional
+			``[nrows, ncols]`` size of the sub-image cutout (default ``None``).
+		use_photutils : bool, optional
+			Whether to use the photutils ePSF fitting pathway instead of the
+			internal PSF fitter (default ``True``).
+		verbose : bool, optional
+			Whether to print progress messages (default ``True``).
+		"""
 		self.image = deepcopy(image)
 		self._bkg_sub = bkg_sub
 		self._clean_image()
@@ -120,6 +215,7 @@ class starkiller_image():
 
 
 	def _subtract_background(self):
+		"""Estimate a 2-D median background and subtract it from the image in-place."""
 		from astropy.stats import SigmaClip
 		from photutils.background import Background2D, MedianBackground
 		sigma_clip = SigmaClip(sigma=3.0)
@@ -185,10 +281,20 @@ class starkiller_image():
 		self.cal_cat = cal_cat.iloc[ind]
 
 	def _make_bright_mask(self):
+		"""Build a boolean mask that is ``True`` for pixels significantly brighter than the background."""
 		m,med,std = sigma_clipped_stats(self.image)
 		self.bright_mask = self.image-med > 10 * std
 	
 	def _find_fuzzy_mask(self,sig_size=5):
+		"""
+		Identify extended, low-surface-brightness regions and store a dilated boolean mask.
+
+		Parameters
+		----------
+		sig_size : float, optional
+			Detection threshold in units of the background standard deviation
+			(default ``5``).
+		"""
 		if self.fuzzy:
 			m,med,std = sigma_clipped_stats(self.image)
 			labeled, nr_objects = label(self.image > med + sig_size*std) 
@@ -738,6 +844,17 @@ class starkiller_image():
 
 	
 	def calc_zeropoint(self,plot=False):
+		"""
+		Compute the photometric zeropoint from isolated calibration sources.
+
+		The result is stored in ``self.zp`` (median zeropoint) and
+		``self.std_zp`` (scatter).
+
+		Parameters
+		----------
+		plot : bool, optional
+			Whether to produce a zeropoint diagnostic plot (default ``False``).
+		"""
 		cal = self.cat.loc[self.cat['cal_source'] == 1]
 		sysmag = -2.5*np.log10(cal['psf_flux'])
 		m,med,std = sigma_clipped_stats(cal[self.ref_filter]-sysmag,sigma=2,maxiters=10)
@@ -753,6 +870,7 @@ class starkiller_image():
 
 	
 	def make_scene(self):
+		"""Construct a simulated scene image from the fitted PSF and source catalogue."""
 		if 'data' in self.psf_profile:
 			data = True
 		else:
@@ -760,7 +878,22 @@ class starkiller_image():
 		scene = cube_simulator(self.image,psf=self.psf,catalog=self.cat,datapsf=data)
 	
 	def make_epsf(self,oversample=2,progress_bar=True,epsf_noise_lim=5e-4):
-		
+		"""
+		Build an effective PSF (ePSF) from isolated calibration star cutouts.
+
+		The resulting ePSF model is stored in ``self.epsf``.
+
+		Parameters
+		----------
+		oversample : int, optional
+			Oversampling factor for the ePSF grid (default ``2``).
+		progress_bar : bool, optional
+			Whether to display a progress bar during ePSF fitting (default
+			``True``).
+		epsf_noise_lim : float, optional
+			Noise floor threshold below which ePSF pixels are set to zero
+			(default ``5e-4``).
+		"""
 		cals = self.cal_cat
 		cuts = self.cal_cuts
 		cuts[np.isnan(cuts)] = 0
@@ -789,7 +922,42 @@ class starkiller_image():
 	
 	
 	def psf_phot(self,x=None,y=None,flux=None,image=None,x_bound=5,y_bound=5,group_sep=20,background=False):
-	
+		"""
+		Run PSF photometry on the image using the fitted ePSF.
+
+		Parameters
+		----------
+		x : array-like, optional
+			Initial x pixel positions of sources.  Defaults to
+			``self.cat['x']``.
+		y : array-like, optional
+			Initial y pixel positions of sources.  Defaults to
+			``self.cat['y']``.
+		flux : array-like, optional
+			Initial flux guesses for sources.  If ``None``, photutils
+			estimates the flux internally.
+		image : numpy.ndarray, optional
+			Image to perform photometry on.  Defaults to ``self.image``.
+		x_bound : float, optional
+			Maximum allowed positional offset in x during fitting (default
+			``5``).
+		y_bound : float, optional
+			Maximum allowed positional offset in y during fitting (default
+			``5``).
+		group_sep : float, optional
+			Minimum separation in pixels used to group nearby sources
+			(default ``20``).
+		background : bool, optional
+			Whether to estimate and subtract a local background during fitting
+			(default ``False``).
+
+		Returns
+		-------
+		phot : astropy.table.Table
+			Photometry results table from photutils.
+		psfphot : photutils.psf.PSFPhotometry
+			The fitted PSFPhotometry object.
+		"""
 		if (x is None) | (y is None):
 			x = self.cat['x'].values
 			y = self.cat['y'].values
@@ -821,6 +989,20 @@ class starkiller_image():
 
 
 	def photutils_sequence(self,plot=None):
+		"""
+		Execute the full photutils-based calibration, zeropoint, and scene-subtraction sequence.
+
+		Calibration sources are measured with ``psf_phot``, the photometric
+		zeropoint is derived, all catalogue sources are fitted, and the
+		simulated star field is subtracted to produce ``self.sim`` and
+		``self.diff``.
+
+		Parameters
+		----------
+		plot : bool, optional
+			Whether to generate a zeropoint diagnostic plot.  Defaults to
+			``self.plot``.
+		"""
 		if plot is None:
 			plot = self.plot
 
@@ -900,6 +1082,26 @@ class starkiller_image():
 
 	
 	def plot_diff(self,xlim=None,ylim=None,percentile=[16,99.9],savename=None,include_sim=True):
+		"""
+		Plot the raw image, simulated scene, and star-subtracted residual side by side.
+
+		Parameters
+		----------
+		xlim : list of int, optional
+			``[xmin, xmax]`` pixel range to display.  Defaults to the full
+			image width.
+		ylim : list of int, optional
+			``[ymin, ymax]`` pixel range to display.  Defaults to the full
+			image height.
+		percentile : list of float, optional
+			``[low, high]`` percentiles used to set the colour stretch
+			(default ``[16, 99.9]``).
+		savename : str, optional
+			File path at which to save the figure.  If ``None`` the figure is
+			not saved (default ``None``).
+		include_sim : bool, optional
+			Whether to include the simulated image panel (default ``True``).
+		"""
 		image = self.image
 		cx = self.cat['x_final'].values
 		cy = self.cat['y_final'].values

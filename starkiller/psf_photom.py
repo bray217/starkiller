@@ -1,3 +1,10 @@
+"""
+PSF photometry routines for fitting grouped sources in 2-D images and data cubes.
+
+This module provides the ``PSF_photom`` class for multi-source PSF fitting
+using a pre-built PSF model, together with standalone helper functions used
+by the parallel fitting back-end.
+"""
 import numpy as np
 from joblib import Parallel, delayed
 from scipy.optimize import minimize
@@ -7,6 +14,30 @@ from scipy import signal
 
 class PSF_photom():
     def __init__(self,data,cat,psf=None,pad=20,psf_params=None,data_psf=True,cores=8):
+        """
+        Initialise the PSF photometry fitter.
+
+        Parameters
+        ----------
+        data : numpy.ndarray
+            2-D image or 3-D data cube to be fitted.
+        cat : pandas.DataFrame
+            Source catalogue with at least ``xint`` and ``yint`` integer pixel
+            columns and an ``id`` column.
+        psf : object, optional
+            Pre-built PSF object (e.g. from ``starkiller.trail_psf``).  Either
+            ``psf`` or ``psf_params`` must be provided.
+        pad : int, optional
+            Number of pixels to pad around the data array (default ``20``).
+        psf_params : array-like, optional
+            Parameters ``[alpha, beta, length, angle]`` used to construct a
+            Moffat PSF when no pre-built ``psf`` is supplied.
+        data_psf : bool, optional
+            If ``True`` and a ``psf`` object is provided, replace ``longpsf``
+            with the empirical data PSF (default ``True``).
+        cores : int, optional
+            Number of parallel cores for cube fitting (default ``8``).
+        """
         self.pad = pad
         self._set_data(data)
         self.cores = cores
@@ -25,6 +56,7 @@ class PSF_photom():
 
 
     def _set_psf(self,psf_params):
+        """Build and store a Moffat line PSF from the supplied parameter array."""
         self.psf_params = psf_params
         if self.cube:
             x=self.data.shape[2];y=self.data.shape[1]
@@ -36,6 +68,7 @@ class PSF_photom():
         self.psf.line()
 
     def _set_data(self,data):
+        """Pad the input array and detect whether it is a cube or a single image."""
         self.data = np.pad(data,self.pad,constant_values=np.nan)
         if len(data.shape) == 2:
             self.cube = False
@@ -47,6 +80,7 @@ class PSF_photom():
             
 
     def _set_source_dims(self,source_dims):
+        """Parse and store x/y half-lengths for source cutout regions."""
         try:
             length = len(source_dims)
             if length == 2:
@@ -58,6 +92,15 @@ class PSF_photom():
             self.x_length = source_dims; self.y_length = source_dims
 
     def _make_masks(self,limit=70):
+        """
+        Construct per-source PSF footprint masks via convolution.
+
+        Parameters
+        ----------
+        limit : float, optional
+            Percentile threshold applied to the PSF to define the footprint
+            kernel (default ``70``).
+        """
         im = np.zeros((len(self.cat),self.image.shape[0],self.image.shape[1]))
         for i in range(len(self.cat)):
             im[i,self.cat.yint.values[i] + self.pad,self.cat.xint.values[i] + self.pad] = 1
@@ -67,6 +110,17 @@ class PSF_photom():
         self.source_masks = im
 
     def group_sources(self,limit=85):
+        """
+        Assign each source in the catalogue to a spatial group based on PSF overlap.
+
+        Group labels are written into a new ``'group'`` column of ``self.cat``.
+
+        Parameters
+        ----------
+        limit : float, optional
+            Percentile threshold applied to the PSF to define the overlap
+            kernel (default ``85``).
+        """
         if self.cube:
             image = self.image
         else:
@@ -79,11 +133,13 @@ class PSF_photom():
         im = im > 0.1
         labeled, nr_objects = label(im)
         self.cat['group'] = 0
+        group_col = self.cat.columns.get_loc('group')
         for i in range(len(self.cat)):
-            self.cat['group'].iloc[i] = labeled[self.cat.yint.values[i]+self.pad,self.cat.xint.values[i]+self.pad]
+            self.cat.iloc[i, group_col] = labeled[self.cat.yint.values[i]+self.pad,self.cat.xint.values[i]+self.pad]
             
     
     def _groups_mask(self,ind):
+        """Return a combined footprint mask for the sources selected by ``ind``."""
         if np.sum(ind) > 1:
             mask = (np.nansum(self.source_masks[ind],axis=0) > 0) * 1.0
         else:
@@ -93,6 +149,7 @@ class PSF_photom():
         return mask
 
     def _estimate_f0(self,data,ind):
+        """Estimate initial flux guesses for sources selected by ``ind`` using their PSF footprints."""
         ind = np.where(ind)[0]
         f0 = []
         for i in ind:
@@ -102,6 +159,24 @@ class PSF_photom():
         return f0
 
     def make_psf_image(self,x0,data,sources):
+        """
+        Render a model image by placing shifted PSF copies at each source position.
+
+        Parameters
+        ----------
+        x0 : array-like
+            Parameter vector: fluxes, then x sub-pixel offsets, then y
+            sub-pixel offsets, with a trailing background constant.
+        data : numpy.ndarray
+            2-D reference array that sets the output image shape.
+        sources : pandas.DataFrame
+            Subset of the source catalogue rows to render.
+
+        Returns
+        -------
+        f : numpy.ndarray
+            Rendered model image with the same shape as ``data``.
+        """
         f0 = x0[:len(sources)]; px = x0[len(sources):len(sources)*2] ; py = x0[2*len(sources):]
         bkg = x0[-1]
         tripys = []
@@ -125,6 +200,7 @@ class PSF_photom():
         return f 
 
     def _group_minimizer(self,x0,data,sources):
+        """Return the sum of squared residuals between the data and the PSF model for minimisation."""
         f = self.make_psf_image(x0,data,sources)
         res = np.nansum((data - f)**2)
         return res
@@ -132,6 +208,29 @@ class PSF_photom():
 
 
     def group_fit(self,data,ind):
+        """
+        Fit fluxes, sub-pixel positions, and background for a group of sources.
+
+        Parameters
+        ----------
+        data : numpy.ndarray
+            2-D image slice to fit.
+        ind : array-like of int
+            Integer indices into ``self.cat`` identifying the source group.
+
+        Returns
+        -------
+        flux : numpy.ndarray
+            Best-fit flux for each source.
+        xp : numpy.ndarray
+            Best-fit x sub-pixel offset for each source.
+        yp : numpy.ndarray
+            Best-fit y sub-pixel offset for each source.
+        res : numpy.ndarray
+            Masked residual image after subtracting the model.
+        bkg : float
+            Best-fit background level.
+        """
         sources = self.cat.iloc[ind]
         mask = self._groups_mask(ind)
         f0 = self._estimate_f0(data,ind)
@@ -166,6 +265,13 @@ class PSF_photom():
 
 
     def group_psf(self):
+        """
+        Fit all source groups and accumulate fluxes and refined positions.
+
+        For a 3-D cube the fitting is parallelised over spectral slices.
+        Results are stored in ``self.fluxes`` (keyed by source id) and the
+        ``'x'``/``'y'`` columns of ``self.cat`` are updated in-place.
+        """
         groups = self.cat['group'].unique()
         fluxes = {}
         residual = np.zeros_like(self.data)
@@ -191,7 +297,8 @@ class PSF_photom():
             else:
                 flux, posx, posy, res = _group_fit(sources,groupmask,sourcemasks,image,self.psf,self.pad)
 
-            self.cat['x'].iloc[ind] = posx; self.cat['y'].iloc[ind] = posy
+            self.cat.iloc[ind, self.cat.columns.get_loc('x')] = posx
+            self.cat.iloc[ind, self.cat.columns.get_loc('y')] = posy
             for i in range(len(sources)):
                 fluxes[sources.iloc[i].id] = flux[i]
             #residual = residual + res
@@ -203,6 +310,7 @@ class PSF_photom():
 
 
 def _make_psf_image(x0,data,sources,psf,pad = 0):
+    """Render a model image from a parameter vector; standalone version used by the parallel fitting back-end."""
     f0 = x0[:len(sources)]; px = x0[len(sources):len(sources)*2] ; py = x0[2*len(sources):]
     bkg = x0[-1]
     tripys = []
@@ -226,12 +334,14 @@ def _make_psf_image(x0,data,sources,psf,pad = 0):
     return f 
 
 def _group_minimizer(x0,data,sources,psf,pad):
+    """Return the sum of squared residuals for use as a scalar objective in ``scipy.optimize.minimize``."""
     f = _make_psf_image(x0,data,sources,psf,pad)
     res = np.nansum((data - f)**2)
     return res
 
 
 def _estimate_f0(data,masks):
+    """Return initial flux estimates by summing the masked data within each source footprint."""
     f0 = []
     for m in masks:
         f0 += [np.nansum(m * data)]
@@ -240,6 +350,41 @@ def _estimate_f0(data,masks):
 
 def _group_fit(sources,groupmask,sourcemasks,data,psf,pad=0,
                position_bound=2):
+    """
+    Fit fluxes, positions, and background for a group of sources in a single image slice.
+
+    Parameters
+    ----------
+    sources : pandas.DataFrame
+        Catalogue rows for the sources in the group.
+    groupmask : numpy.ndarray
+        Combined boolean footprint mask for the group.
+    sourcemasks : list of numpy.ndarray
+        Per-source footprint masks used for initial flux estimation.
+    data : numpy.ndarray
+        2-D image slice to fit.
+    psf : object
+        PSF model object with a ``longpsf`` attribute.
+    pad : int, optional
+        Pixel padding offset already applied to source coordinates (default
+        ``0``).
+    position_bound : float, optional
+        Maximum allowed positional offset in pixels during optimisation
+        (default ``2``).
+
+    Returns
+    -------
+    flux : numpy.ndarray
+        Best-fit flux for each source.
+    xp : numpy.ndarray
+        Best-fit x position for each source.
+    yp : numpy.ndarray
+        Best-fit y position for each source.
+    res : numpy.ndarray
+        Masked residual image after subtracting the model.
+    bkg : float
+        Best-fit background level.
+    """
     f0 = _estimate_f0(data,sourcemasks)
     f0[f0 < 0] = 1
     pos0 = np.append(sources['xint'].values + pad,sources['yint'].values + pad,axis=0)

@@ -1,3 +1,8 @@
+"""
+Core module for starkiller, providing the :class:`starkiller` class that models
+stellar sources in IFU data cubes, fits their spectral types, and subtracts the
+modelled scene to produce a star-subtracted residual cube.
+"""
 import os
 import sys
 import traceback
@@ -15,7 +20,7 @@ from astropy.wcs import WCS
 from copy import deepcopy
 
 
-from scipy.ndimage.filters import convolve
+from scipy.ndimage import convolve
 from scipy.ndimage import gaussian_filter, label
 from scipy.ndimage import shift
 from scipy.signal import savgol_filter
@@ -128,6 +133,9 @@ class starkiller():
 			Optional value to set as the threshold for satellite detection. Default is 3.0
 		force_flux_correction : boolean
 			Option to use the flux correction even if just only 1 source is available
+		kill_stars : boolean
+			Option to model and subtract stellar sources. If False, only satellite
+			subtraction and scene construction are performed without spectral fitting.
 
 
 		Examples:
@@ -529,11 +537,11 @@ class starkiller():
 		bounds = [[-10,10],[-10,10],[0,np.pi/2]]
 		res = minimize(minimize_dist,x0,args=(catx,caty,sourcex,sourcey,self.image),method='Nelder-Mead',bounds=bounds)
 
-		xx = x + res.x[0]
-		yy = y + res.x[1]
+		sx = x + res.x[0]
+		sy = y + res.x[1]
 		cx = self.image.shape[1]/2; cy = self.image.shape[0]/2
-		xx = cx + ((xx-cx)*np.cos(res.x[2])-(yy-cy)*np.sin(res.x[2]))
-		yy = cy + ((xx-cx)*np.sin(res.x[2])+(yy-cy)*np.cos(res.x[2]))
+		xx = cx + ((sx-cx)*np.cos(res.x[2])-(sy-cy)*np.sin(res.x[2]))
+		yy = cy + ((sx-cx)*np.sin(res.x[2])+(sy-cy)*np.cos(res.x[2]))
 
 		cut = min_dist(xx,yy,sourcex,sourcey) < 10
 		res = minimize(minimize_dist,x0,args=(catx[cut],caty[cut],sourcex,sourcey,self.image),method='Nelder-Mead',bounds=bounds)
@@ -625,12 +633,6 @@ class starkiller():
 			failed = True
 			sourcenum = [1,2,3,4,5]
 			while (safety < maxiter) & failed:
-				ind = len(self._dao_s['xcentroid'])*sourcenum[safety]
-		if method.lower() == 'dist':
-			safety = 0
-			failed = True
-			sourcenum = [1,2,3,4,5]
-			while (safety < maxiter) & failed:
 				ind = len(self._dao_s['xcentroid'])*sourcenum[safety] #self.cat['Gmag'].values < 20
 				try:
 					if self.verbose:
@@ -642,7 +644,7 @@ class starkiller():
 				safety += 1
 			if failed:
 				m = 'Could not match sources, send the data to Ryan!'
-				ValueError(m)
+				raise ValueError(m)
 
 		if method.lower() == 'shift':
 			self._match_by_shift()
@@ -1316,15 +1318,27 @@ class starkiller():
 		"""
 		Obtain a spectrum at the specified location.
 
-		Parameters:
-		x : float 
-			x pixel position (image axis 1)
-		y : float 
-			y pixel position (image axis 0)
+		Parameters
+		----------
+		x : float or int
+			x pixel position (image axis 1).
+		y : float or int
+			y pixel position (image axis 0).
 		fitpos : bool
-			Option to fit the source position when extracting the spectrum through PSF methods
-		cube : array
-			User input 3d datacube. If none is specified then self.cube is used.
+			Option to fit the source position when extracting the spectrum through PSF
+			methods. Default is True.
+		cube : array, optional
+			User-supplied 3-D data cube. If None, ``self.cube`` (background-subtracted)
+			is used.
+		plot : bool
+			Option to save a spectrum figure to the ``spec_figs`` directory. Default
+			is False.
+
+		Returns
+		-------
+		cat_off : pandas.DataFrame
+			DataFrame of source metadata with an added ``spec`` column containing the
+			extracted :class:`pysynphot.ArraySpectrum` object for each position.
 		"""
 		if (type(x) == float) | (type(x) == int):
 			x = [x]; y = [y]
@@ -1477,6 +1491,13 @@ class starkiller():
 		plt.legend()
 
 	def plot_ebv(self):
+		"""
+		Plot the distribution and spatial map of dust reddening for all sources.
+
+		Produces a two-panel figure: a histogram of E(B-V) values (left panel) and
+		a spatial scatter plot of each source's E(B-V) overlaid on the white-light
+		image (right panel).
+		"""
 		plt.figure(figsize=(11,4))
 
 		plt.subplot(121)
@@ -1533,7 +1554,29 @@ class starkiller():
 
 
 	def make_template_psf(self,alpha=2,beta=2,stddev=2,length=1,angle=0):
-		
+		"""
+		Construct a template PSF from analytic parameters without using calibration stars.
+
+		This is used when ``kill_stars=False`` so that a PSF is still available for
+		satellite modelling.  The PSF profile (Moffat or Gaussian) is chosen from
+		``self.psf_profile``.
+
+		Parameters
+		----------
+		alpha : float
+			Moffat alpha parameter. Only used when ``psf_profile`` contains ``'moffat'``.
+			Default is 2.
+		beta : float
+			Moffat beta parameter. Only used when ``psf_profile`` contains ``'moffat'``.
+			Default is 2.
+		stddev : float
+			Gaussian standard deviation in pixels. Only used when ``psf_profile``
+			contains ``'gaussian'``. Default is 2.
+		length : float
+			Trail length in pixels. Default is 1 (point source).
+		angle : float
+			Trail angle in radians. Default is 0.
+		"""
 		#set to ints because they are not set earlier #! magic numbers that are reset later
 		self.x_length = 10
 		self.y_length = 10
