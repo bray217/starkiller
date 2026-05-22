@@ -176,7 +176,7 @@ img = starkiller_image(
 
 ## Papers
 
-Starkiller was developed for the MUSE 2I/Borisov dataset to recover observations that would otherwise have been unusable due to stellar contamination. See **Deam et al. 2024** for details.
+Starkiller was developed for the MUSE 2I/Borisov dataset to recover observations that would otherwise have been unusable due to stellar contamination. See **[Deam et al. 2026](https://doi.org/10.3847/PSJ/ae5244)** for details.
 
 ![plot](./figs/BeforeAfter_starkiller.png)
 
