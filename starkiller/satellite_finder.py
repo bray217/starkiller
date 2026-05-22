@@ -65,6 +65,7 @@ class sat_killer():
         self.num_cores = num_cores
         self.wavelength = wavelength
         self.streak_coef = []
+        self.rotPlot = False
 
         if run:
             
@@ -924,8 +925,8 @@ class sat_killer():
             return medVals, stdVals, cPrime, offset
 
         try:
-            return -1* medVals[cPrime] 
-        except:
+            return -1 * medVals[cPrime]
+        except (IndexError, TypeError):
             return 0
 
 
@@ -939,23 +940,15 @@ class sat_killer():
         self.optParams = []
         self.streakLens = []
         self.streak_widths = []
-        # print("coefs to opt:", self.streak_coef)
         for i in range(len(self.streak_coef)):
             m = self.streak_coef[i,0]
             c = self.streak_coef[i,1]
 
-            guessParams = [np.degrees(np.arctan(m)), c] 
-            # guessParams = [np.degrees(np.arctan(m))+(np.random.rand()-0.5), c+4*(np.random.rand()-0.5)] 
-
-            print(guessParams)
+            guessParams = [np.degrees(np.arctan(m)), c]
 
             self.rotPlot = False
 
             res = minimize(self.rotMax, guessParams, bounds = [(guessParams[0]-degBound, guessParams[0]+degBound), (guessParams[1]-cBound, guessParams[1]+cBound)], method='nelder-mead')
-
-            # print(res)
-            # print("")
-            print(res.x)
 
             self.rotPlot = True
             medVals, stdVals, cPrime, offset = self.rotMax(res.x)
@@ -969,55 +962,36 @@ class sat_killer():
             fitSigma = stdVals[cPrime-fitHWidth: cPrime+fitHWidth]
 
             guessAmp = medVals[cPrime]
-            guessK =np.nanmean(medVals[np.nonzero(medVals)])
+            guessK = np.nanmean(medVals[np.nonzero(medVals)])
 
-            guessGauss = [cPrime, 2, guessAmp,guessK] #[mu, sigma, a, k]
+            guessGauss = [cPrime, 2, guessAmp, guessK] #[mu, sigma, a, k]
 
-            boundsGauss = ([cPrime-0.5,1,2*guessAmp/3,guessK-1],[cPrime+0.5,15,3*guessAmp/2 if guessAmp !=0 else 0.1,guessK+1]) #! conditional to try and stop 0 amp throwing error. 
+            boundsGauss = ([cPrime-0.5,1,2*guessAmp/3,guessK-1],[cPrime+0.5,15,3*guessAmp/2 if guessAmp !=0 else 0.1,guessK+1]) #! conditional to try and stop 0 amp throwing error.
 
-            print("Gaussian:")
-            print(guessGauss)
             try:
-                popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma, bounds=boundsGauss) #// TODO add std of each row as err vals, might help.
-                #* std vals made fit worse. The peak is too variable along the row
-            except:
+                popt, pcov = curve_fit(self.gaussToOpt, fitXVals, fitMedVals, p0=guessGauss, sigma=fitSigma, bounds=boundsGauss)
+            except (RuntimeError, ValueError):
                 popt = guessGauss
-                pcovM = np.zeros((4,4))
+                pcov = np.zeros((4, 4))
 
-            print(popt)
-            print(np.sqrt(np.diag(pcov)))
-
-            r= fitMedVals-self.gaussToOpt(fitXVals,*popt)
+            r = fitMedVals - self.gaussToOpt(fitXVals, *popt)
             chisq = np.sum((r/fitSigma)**2)
-            print(chisq)
-            # redChisq = chisq/(len(fitMedVals)-len(popt))
-            # print(redChisq)
-            p=len(popt)
+            p = len(popt)
             n = len(fitMedVals)
-            aic = chisq + 2*p +(2*p*(p+1))/(n-p-1)
-            print(aic)
+            aic = chisq + 2*p + (2*p*(p+1))/(n-p-1)
 
-
-            guessMoffat = [cPrime, 2, 2, guessK] #medVals[cPrime],
+            guessMoffat = [cPrime, 2, 2, guessK]
             boundsMoffat = ([cPrime-0.5,0,0,guessK-1],[cPrime+0.5,5,5,guessK+1])
-            print("Moffat")
-            print(guessMoffat)
             try:
                 poptM, pcovM = curve_fit(self.moffat1dToOpt, fitXVals, fitMedVals, p0=guessMoffat, sigma=fitSigma, bounds=boundsMoffat)
-            except:
+            except (RuntimeError, ValueError):
                 poptM = guessMoffat
-                pcovM = np.zeros((4,4))
+                pcovM = np.zeros((4, 4))
 
-            print(poptM)
-            print(np.sqrt(np.diag(pcovM)))
-            rM= fitMedVals-self.moffat1dToOpt(fitXVals,*poptM)
+            rM = fitMedVals - self.moffat1dToOpt(fitXVals, *poptM)
             chisqM = np.sum((rM/fitSigma)**2)
-            print(chisqM)
-            # redChisqM = chisqM/(len(fitMedVals)-len(poptM))
-            # print(redChisqM)       
-            pM=len(poptM)
-            aicM = chisqM + 2*pM +(2*pM*(pM+1))/(n-pM-1)
-            print(aicM)
+            pM = len(poptM)
+            aicM = chisqM + 2*pM + (2*pM*(pM+1))/(n-pM-1)
 
 
             fig, ax = plt.subplots()
@@ -1128,23 +1102,18 @@ class sat_killer():
             # x_source = 0
             # y_source = 0
 
-            print(newCoef)
-
             if self.star_psf.psf_profile == 'moffat_sat':
                 thisoptParams = [poptM[1],poptM[2]]#, length, res.x[0],x_source,y_source] #right len for moffat [alpha, beta#, length, angle, x_source, y_source]
-                newCoef[1] = (poptM[0]-offset)/np.cos(np.arctan(newCoef[0])) #change +c to be from what was found to be peak of distribution 
+                newCoef[1] = (poptM[0]-offset)/np.cos(np.arctan(newCoef[0])) #change +c to be from what was found to be peak of distribution
 
             elif self.star_psf.psf_profile == 'gaussian':
                 thisoptParams = [popt[1]]#, length, res.x[0],x_source,y_source] #right len for gaussian [stddev#, length, angle, x_source, y_source]
                 newCoef[1] = (popt[0]-offset)/np.cos(np.arctan(newCoef[0]))
 
-            print(newCoef)
-
             self.streak_coef[i,0] = newCoef[0]
             self.streak_coef[i,1] = newCoef[1]
             self.optParams.append(thisoptParams)
             self.streak_widths.append(popt[1])
-        print("opt coefs:", self.streak_coef)
         # kill
 
 
