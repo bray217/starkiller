@@ -180,6 +180,8 @@ Starkiller was developed for the MUSE 2I/Borisov dataset to recover observations
 
 ![plot](./figs/BeforeAfter_starkiller.png)
 
+The starkiller method is described in **[Ridden-Harper et al. 2025](https://doi.org/10.3847/1538-3881/ad9f2b)** (*The Astronomical Journal*, 169, 148).
+
 If you use starkiller, please cite the Zenodo release using the DOI badge at the top of this page.
 
 ---
